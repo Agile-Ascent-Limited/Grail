@@ -33,18 +33,17 @@ npm install -g pm2
 
 ### 2. Install Python Dependencies
 
+Follow the official installation from [docs/miner.md](miner.md):
+
 ```bash
 cd /path/to/grail
 
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate
+# Create venv and install (uses lockfile for reproducibility)
+uv venv && source .venv/bin/activate
+uv sync
 
-# Install grail with all dependencies
-pip install -e .
-
-# Install performance packages
-pip install flash-attn --no-build-isolation  # Flash Attention 2
+# Install performance packages for A100
+pip install flash-attn --no-build-isolation  # Flash Attention 2 (~30% faster)
 pip install orjson                            # Fast JSON (3-5x faster)
 pip install bitsandbytes                      # Quantization (optional, for 30B+ models)
 ```
@@ -499,9 +498,10 @@ With the superlinear scoring formula `score = unique_rollouts^4.0`:
 ## Quick Start Summary
 
 ```bash
-# 1. Setup
+# 1. Setup (uses official uv method)
 cd /path/to/grail
-pip install -e .
+uv venv && source .venv/bin/activate
+uv sync
 pip install flash-attn --no-build-isolation
 pip install orjson
 
