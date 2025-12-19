@@ -53,9 +53,13 @@ from ..shared.constants import (
     WINDOW_LENGTH,
 )
 from . import comms
+from .checkpoint_lock import CheckpointLock, cleanup_stale_locks
 from .delta_checkpoint import apply_sparse_delta, compute_weights_hash
 
 logger = logging.getLogger(__name__)
+
+# Multi-worker configuration
+MULTI_WORKER_ENABLED = int(os.getenv("GRAIL_TOTAL_WORKERS", "1")) > 1
 
 CHECKPOINT_PREFIX = "grail/checkpoints/"
 
@@ -134,6 +138,11 @@ class CheckpointManager:
         now simply downloads and validates the requested checkpoint without fallback.
         If the checkpoint is not ready, returns None and the caller should wait/retry.
 
+        Multi-worker support:
+        When GRAIL_TOTAL_WORKERS > 1, uses cross-process file locking to ensure
+        only one worker downloads each checkpoint. Other workers wait for the
+        download to complete and then use the shared cached checkpoint.
+
         Notes (testing only):
         If GRAIL_CHECKPOINT_MOD10 == True, the incoming window is
         deterministically remapped to [0..9] via modulo 10 to allow
@@ -158,6 +167,12 @@ class CheckpointManager:
             return None
 
         local_dir = self.cache_root / f"checkpoint-{window}"
+
+        # Multi-worker mode: use cross-process locking
+        if MULTI_WORKER_ENABLED:
+            return await self._get_checkpoint_multi_worker(window, local_dir)
+
+        # Single worker mode: use in-process asyncio lock
         lock = self._download_locks.setdefault(window, asyncio.Lock())
 
         async with lock:
@@ -263,6 +278,165 @@ class CheckpointManager:
                     exc,
                 )
                 return None
+
+    async def _get_checkpoint_multi_worker(self, window: int, local_dir: Path) -> Path | None:
+        """Get checkpoint with cross-process coordination for multi-worker setups.
+
+        Uses file-based locking to ensure only one worker downloads each checkpoint.
+        Other workers wait for the download to complete.
+
+        Args:
+            window: Checkpoint window number
+            local_dir: Expected local directory for the checkpoint
+
+        Returns:
+            Path to local checkpoint directory, or None if not available
+        """
+        # Clean up any stale locks from crashed workers
+        cleanup_stale_locks(self.cache_root)
+
+        async with CheckpointLock(self.cache_root, window) as lock:
+            if not lock.should_download:
+                # Another worker is downloading - wait for it
+                if await lock.wait_for_download():
+                    # Download completed by another worker
+                    if local_dir.exists():
+                        try:
+                            manifest = await self._load_manifest(local_dir)
+                            if manifest and await self._verify_integrity(local_dir, manifest):
+                                logger.info(
+                                    "✅ Using checkpoint %s downloaded by another worker",
+                                    window,
+                                )
+                                return local_dir
+                        except Exception as exc:
+                            logger.warning("Cached checkpoint verification failed: %s", exc)
+                    # Fall through to download ourselves
+                    logger.warning(
+                        "Checkpoint %s not found after waiting, will download",
+                        window,
+                    )
+                else:
+                    # Timeout or error waiting
+                    logger.warning(
+                        "Timeout waiting for checkpoint %s, will try downloading",
+                        window,
+                    )
+
+            # This worker should download (or retry after failed wait)
+            result = await self._do_checkpoint_download(window, local_dir)
+
+            if result is not None:
+                # Mark download as complete for other workers
+                lock.mark_complete()
+
+            return result
+
+    async def _do_checkpoint_download(self, window: int, local_dir: Path) -> Path | None:
+        """Perform the actual checkpoint download.
+
+        Extracted from get_checkpoint for reuse in multi-worker mode.
+
+        Args:
+            window: Checkpoint window number
+            local_dir: Target directory for the checkpoint
+
+        Returns:
+            Path to downloaded checkpoint, or None on failure
+        """
+        metadata = await self._fetch_metadata(window)
+        if metadata is None:
+            logger.debug(
+                "No metadata.json for window %s — attempting best-effort download",
+                window,
+            )
+
+        # Check if already cached and valid
+        if local_dir.exists():
+            try:
+                manifest = await self._load_manifest(local_dir)
+                if manifest and await self._verify_integrity(local_dir, manifest):
+                    return local_dir
+                logger.warning("Cached checkpoint for window %s failed verification", window)
+            except Exception as exc:
+                logger.warning("Failed to verify cached checkpoint: %s", exc)
+            shutil.rmtree(local_dir, ignore_errors=True)
+
+        # Check READY marker
+        ready_window = await self._get_checkpoint_ready_window(window)
+        if ready_window is None:
+            logger.warning(
+                "Checkpoint for window %s not ready (READY marker not found)",
+                window,
+            )
+            return None
+
+        logger.debug("Checkpoint-%s became ready at window %s", window, ready_window)
+
+        tmp_dir = self.cache_root / f"checkpoint-{window}.partial"
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            logger.info("Starting checkpoint download for window %s", window)
+
+            if metadata is not None and metadata.is_delta():
+                logger.info(
+                    "Checkpoint %s is DELTA (base=%s), will reconstruct",
+                    window,
+                    metadata.base_window,
+                )
+                reconstructed_dir = await self._handle_delta_checkpoint(metadata, tmp_dir)
+                if reconstructed_dir is None:
+                    raise CheckpointDownloadError(
+                        f"Failed to reconstruct delta checkpoint for window {window}"
+                    )
+            elif metadata is not None and metadata.file_manifest:
+                logger.debug(
+                    "Downloading %s files for checkpoint window %s using manifest",
+                    len(metadata.file_manifest),
+                    window,
+                )
+                await self._download_files(metadata, tmp_dir)
+                logger.debug("Verifying integrity for checkpoint window %s", window)
+                if not await self._verify_integrity(tmp_dir, metadata.file_manifest):
+                    raise CheckpointDownloadError(f"Integrity check failed for window {window}")
+
+                manifest_path = tmp_dir / "metadata.json"
+                manifest_path.write_text(
+                    json.dumps(
+                        {
+                            "window": metadata.window,
+                            "file_manifest": metadata.file_manifest,
+                            "training_config": metadata.training_config,
+                            "git_commit": metadata.git_commit,
+                            "created_at": metadata.created_at,
+                            "model_name": metadata.model_name,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            else:
+                logger.debug(
+                    "Downloading checkpoint window %s without manifest (best-effort)",
+                    window,
+                )
+                await self._download_all_in_prefix(window, tmp_dir)
+
+            logger.info("Checkpoint download completed for window %s, finalizing...", window)
+            shutil.move(str(tmp_dir), str(local_dir))
+            logger.info("✅ Checkpoint for window %s ready at %s", window, local_dir)
+            return local_dir
+        except Exception as exc:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            logger.error(
+                "Checkpoint download/integrity failed for window %s: %s",
+                window,
+                exc,
+            )
+            return None
 
     async def cleanup_local(self, current_window: int) -> None:
         """Remove cached checkpoints outside the retention policy."""

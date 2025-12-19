@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import traceback
 from types import SimpleNamespace
 
@@ -23,6 +24,7 @@ from grail.infrastructure.checkpoint_consumer import (
     default_checkpoint_cache_root,
 )
 from grail.infrastructure.credentials import load_r2_credentials
+from grail.infrastructure.worker_config import WorkerConfig, log_multi_gpu_setup
 from grail.model.provider import clear_model_and_tokenizer, get_model, get_tokenizer
 from grail.monitoring import get_monitoring_manager
 from grail.monitoring.config import MonitoringConfig
@@ -56,6 +58,10 @@ class MinerNeuron(BaseNeuron):
         wallet = bt.wallet(name=coldkey, hotkey=hotkey)
 
         logger.info(f"🔑 Miner hotkey: {wallet.hotkey.ss58_address}")
+
+        # Log multi-GPU and worker configuration
+        log_multi_gpu_setup()
+        worker_config = WorkerConfig.from_env()
 
         # Model and tokenizer will be loaded from checkpoint
         model = None
@@ -272,6 +278,7 @@ class MinerNeuron(BaseNeuron):
                         monitor,
                         self.use_drand,
                         checkpoint_window,
+                        worker_config,  # Multi-worker support
                     )
 
                     if inferences:

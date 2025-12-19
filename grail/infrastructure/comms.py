@@ -28,6 +28,53 @@ logger = logging.getLogger(__name__)
 # Protocol version for dataset versioning
 PROTOCOL_VERSION = "v1.0.0"
 
+# Default estimated bandwidth for adaptive concurrency (Mbps)
+# Can be overridden via GRAIL_UPLOAD_BANDWIDTH_MBPS env var
+_DEFAULT_BANDWIDTH_MBPS = float(os.getenv("GRAIL_UPLOAD_BANDWIDTH_MBPS", "100"))
+
+
+def _calculate_upload_concurrency(chunk_size: int, bandwidth_mbps: float | None = None) -> int:
+    """Calculate optimal concurrent uploads based on chunk size and estimated bandwidth.
+
+    PERFORMANCE OPTIMIZATION: Instead of hard-coded concurrency limits, this
+    function adapts to the available bandwidth and chunk size to maximize
+    throughput while avoiding connection contention.
+
+    Args:
+        chunk_size: Size of each upload chunk in bytes
+        bandwidth_mbps: Estimated available bandwidth in Mbps (default: 100)
+
+    Returns:
+        Optimal number of concurrent uploads (2-32 range)
+    """
+    bandwidth = bandwidth_mbps or _DEFAULT_BANDWIDTH_MBPS
+
+    # Target upload time per chunk: 5-10 seconds to amortize handshake overhead
+    target_upload_time = 7.0
+
+    chunk_mb = chunk_size / (1024 * 1024)
+    # Time to upload one chunk at full bandwidth
+    single_chunk_time = (chunk_mb * 8) / bandwidth  # Convert to bits, then divide by bandwidth
+
+    # How many chunks can we upload concurrently to fill the bandwidth?
+    # If chunks are large (>100MB), limit concurrency to avoid memory issues
+    if chunk_mb > 100:
+        max_concurrent = 6
+    elif chunk_mb > 50:
+        max_concurrent = 12
+    else:
+        max_concurrent = 32
+
+    # Calculate optimal concurrency based on target upload time
+    if single_chunk_time > 0:
+        # We want enough concurrent uploads that total transfer time is reasonable
+        optimal = int(target_upload_time / single_chunk_time)
+    else:
+        optimal = 8
+
+    # Clamp to reasonable range
+    return max(2, min(max_concurrent, optimal))
+
 # --------------------------------------------------------------------------- #
 #                   S3/R2 Configuration                                       #
 # --------------------------------------------------------------------------- #
@@ -471,8 +518,10 @@ async def upload_file_chunked(
         response = await client.create_multipart_upload(Bucket=bucket_id, Key=key)
         upload_id = response["UploadId"]
 
-        # Upload chunks concurrently with limited concurrency (fewer for larger chunks)
-        semaphore = asyncio.Semaphore(3 if chunk_size >= 200 * 1024 * 1024 else 15)
+        # Upload chunks concurrently with adaptive concurrency based on chunk size and bandwidth
+        concurrent_uploads = _calculate_upload_concurrency(chunk_size)
+        semaphore = asyncio.Semaphore(concurrent_uploads)
+        logger.debug(f"Using {concurrent_uploads} concurrent uploads for {chunk_size / (1024*1024):.1f}MB chunks")
         tasks = []
 
         for i in range(0, total_size, chunk_size):

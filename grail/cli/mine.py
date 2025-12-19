@@ -21,6 +21,7 @@ from ..environments.loop import AgentEnvLoop
 from ..grail import derive_env_seed
 from ..infrastructure.comms import sink_window_inferences
 from ..infrastructure.drand import get_drand_beacon
+from ..infrastructure.worker_config import WorkerConfig, log_multi_gpu_setup
 from ..shared.constants import (
     BLOCK_TIME_SECONDS,
     CHALLENGE_K,
@@ -539,6 +540,7 @@ async def generate_rollouts_for_window(
     monitor: Any | None,
     use_drand: bool,
     checkpoint_window: int,
+    worker_config: WorkerConfig | None = None,
 ) -> list[dict]:
     """Generate as many GRPO rollouts as safely possible within a window.
 
@@ -547,6 +549,7 @@ async def generate_rollouts_for_window(
       - Periodically clear CUDA cache to reduce fragmentation
       - Track and log per-window metrics
       - Package each rollout with commit-binding signatures and proofs
+      - Support multi-worker partitioning for parallel mining
 
     Args:
         wallet: Miner wallet for signing and authentication.
@@ -560,10 +563,15 @@ async def generate_rollouts_for_window(
         monitor: Optional monitoring client for metrics.
         use_drand: Whether drand was used in randomness generation.
         checkpoint_window: The checkpoint window used for this generation
+        worker_config: Optional multi-worker configuration for problem partitioning
 
     Returns:
         List of signed rollout data ready for upload.
     """
+    # Load worker config if not provided
+    if worker_config is None:
+        worker_config = WorkerConfig.from_env()
+
     # Window generation state and metrics
     inferences: list[dict] = []
     start_time = time.time()
@@ -573,9 +581,11 @@ async def generate_rollouts_for_window(
     total_reward = 0.0
     # Avoid flooding logs in debug mode
     text_logs_emitted = 0  # Running count of emitted debug texts
-    problem_count = 0
+    problem_count = 0  # Global problem counter (across all workers)
+    worker_problem_count = 0  # Problems this worker has processed
 
-    device = model.device
+    # Detect device from model (handles multi-GPU)
+    device = getattr(model, "grail_primary_device", None) or model.device
     # Batch size for parallel rollout generation (tune per node for memory/throughput)
     batch_size = int(os.getenv("GRAIL_GENERATION_BATCH_SIZE", "2"))
     if batch_size > ROLLOUTS_PER_PROBLEM:
@@ -617,17 +627,44 @@ async def generate_rollouts_for_window(
         try:
             gen_start = time.time()
             problem_count += 1
+
+            # Multi-worker partitioning: skip problems not assigned to this worker
+            problem_index = max(0, problem_count - 1)
+            if not worker_config.should_handle_problem(problem_index):
+                # Skip this problem - another worker will handle it
+                logger.debug(
+                    "Skipping problem %d (assigned to worker %d, we are worker %d)",
+                    problem_index,
+                    problem_index % worker_config.total_workers,
+                    worker_config.worker_id,
+                )
+                await asyncio.sleep(0.001)  # Yield to event loop
+                continue
+
+            worker_problem_count += 1
             inference_count += 1
 
-            logger.info(
-                "⚡ Generating GRPO rollouts for problem %s (block %s/%s)...",
-                problem_count,
-                current_block,
-                window_start + WINDOW_LENGTH - 1,
-            )
+            # Log with worker info if in multi-worker mode
+            if worker_config.total_workers > 1:
+                logger.info(
+                    "⚡ Worker %d/%d: Generating GRPO rollouts for problem %d (local #%d, block %s/%s)...",
+                    worker_config.worker_id + 1,
+                    worker_config.total_workers,
+                    problem_index,
+                    worker_problem_count,
+                    current_block,
+                    window_start + WINDOW_LENGTH - 1,
+                )
+            else:
+                logger.info(
+                    "⚡ Generating GRPO rollouts for problem %s (block %s/%s)...",
+                    problem_count,
+                    current_block,
+                    window_start + WINDOW_LENGTH - 1,
+                )
 
             # Periodically reclaim free memory — helpful for long runs
-            if inference_count % 10 == 0 and torch.cuda.is_available():
+            if worker_problem_count % 10 == 0 and torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 logger.debug(
                     "GPU memory allocated: %s MB",
@@ -635,7 +672,8 @@ async def generate_rollouts_for_window(
                 )
 
             # Deterministically derive environment seed from miner+window+index
-            problem_index = max(0, problem_count - 1)
+            # NOTE: problem_index is used (not worker_problem_count) to ensure
+            # all workers generate unique, deterministic problems
             seed_int = derive_env_seed(wallet.hotkey.ss58_address, window_block_hash, problem_index)
             # Use deterministic problem index as rollout_group identifier
             base_nonce = problem_index
