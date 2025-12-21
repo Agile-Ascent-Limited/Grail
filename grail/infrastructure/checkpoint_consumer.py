@@ -517,15 +517,9 @@ class CheckpointManager:
 
             if window not in keep_windows:
                 logger.debug("Removing local checkpoint %s (window %s)", candidate, window)
-                try:
-                    shutil.rmtree(candidate)
-                except Exception as e:
-                    logger.error(
-                        "Failed to delete checkpoint %s: %s",
-                        candidate,
-                        e,
-                        exc_info=True,
-                    )
+                # Use ignore_errors=True to handle race conditions where another
+                # worker may have already deleted this checkpoint
+                shutil.rmtree(candidate, ignore_errors=True)
 
     async def list_remote_windows(self) -> list[int]:
         """Return all checkpoint window numbers available in R2."""
