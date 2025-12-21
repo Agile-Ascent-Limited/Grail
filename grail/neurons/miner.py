@@ -19,6 +19,8 @@ from grail.cli.mine import (
     upload_inferences_with_metrics,
 )
 from grail.infrastructure.chain import GrailChainManager
+from grail.trainer.config import EvalConfig
+from grail.trainer.inference_server import ServerConfig, VLLMServerManager
 from grail.infrastructure.checkpoint_consumer import (
     CheckpointManager,
     default_checkpoint_cache_root,
@@ -40,6 +42,71 @@ from grail.shared.window_utils import (
 from .base import BaseNeuron
 
 logger = logging.getLogger(__name__)
+
+
+def _create_vllm_server_manager(
+    checkpoint_path: str,
+    worker_id: int,
+    gpu_memory_util: float = 0.50,
+) -> VLLMServerManager | None:
+    """Create a vLLM server manager for the miner if GRAIL_USE_VLLM=1.
+
+    The server port is calculated as: base_port + worker_id
+    Default base port is 30000, so worker 0 uses 30000, worker 1 uses 30001, etc.
+
+    Args:
+        checkpoint_path: Path to the model checkpoint
+        worker_id: Worker ID for port calculation
+        gpu_memory_util: GPU memory fraction for vLLM (default 0.50 to leave room for proof model)
+
+    Returns:
+        VLLMServerManager if vLLM is enabled, None otherwise
+    """
+    use_vllm = os.getenv("GRAIL_USE_VLLM", "0") == "1"
+    if not use_vllm:
+        return None
+
+    base_port = int(os.getenv("GRAIL_VLLM_BASE_PORT", "30000"))
+    port = base_port + worker_id
+
+    # Create server config
+    server_config = ServerConfig(
+        host="127.0.0.1",
+        port=port,
+        timeout_s=300.0,
+        trust_remote_code=True,
+        dtype="bfloat16",
+        model_path=checkpoint_path,
+    )
+
+    # Create eval config for vLLM settings
+    eval_config = EvalConfig(
+        vllm_gpu_memory_utilization=gpu_memory_util,
+        vllm_max_model_len=int(os.getenv("GRAIL_VLLM_MAX_MODEL_LEN", "4096")),
+        vllm_max_num_seqs=int(os.getenv("GRAIL_VLLM_MAX_NUM_SEQS", "32")),
+        stream_server_logs=False,  # Don't stream logs to keep output clean
+    )
+
+    # Get vLLM Python path
+    vllm_python = os.getenv(
+        "GRAIL_VLLM_PYTHON",
+        "tools/vllm-server/.venv/bin/python",
+    )
+
+    manager = VLLMServerManager(
+        config=server_config,
+        eval_config=eval_config,
+        python_executable=vllm_python,
+    )
+
+    logger.info(
+        "Created vLLM server manager for worker %d (port %d, gpu_mem=%.0f%%)",
+        worker_id,
+        port,
+        gpu_memory_util * 100,
+    )
+
+    return manager
 
 
 class MinerNeuron(BaseNeuron):
@@ -68,9 +135,10 @@ class MinerNeuron(BaseNeuron):
         tokenizer = None
         current_checkpoint_window: int | None = None
         window_wait_tracker = WindowWaitTracker(log_interval_secs=120)
+        vllm_server: VLLMServerManager | None = None
 
         async def _run() -> None:
-            nonlocal model, tokenizer, current_checkpoint_window
+            nonlocal model, tokenizer, current_checkpoint_window, vllm_server
             last_window_start = -1
             timers = MiningTimers()
 
@@ -222,6 +290,54 @@ class MinerNeuron(BaseNeuron):
                                             f"reserved={torch.cuda.memory_reserved() / 1024**3:.2f}GB"
                                         )
                                         torch.cuda.empty_cache()
+
+                                    # Start or reload vLLM server with new checkpoint
+                                    if os.getenv("GRAIL_USE_VLLM", "0") == "1":
+                                        gpu_mem_util = float(
+                                            os.getenv("GRAIL_VLLM_GPU_MEMORY_UTIL", "0.50")
+                                        )
+                                        if vllm_server is None:
+                                            # First time - create and start server
+                                            vllm_server = _create_vllm_server_manager(
+                                                str(checkpoint_path),
+                                                worker_config.worker_id,
+                                                gpu_memory_util=gpu_mem_util,
+                                            )
+                                            if vllm_server is not None:
+                                                logger.info(
+                                                    "🚀 Starting vLLM server for worker %d...",
+                                                    worker_config.worker_id,
+                                                )
+                                                await vllm_server.start_server()
+                                                # Set URL for AgentEnvLoop to use
+                                                os.environ["GRAIL_VLLM_URL"] = vllm_server.base_url
+                                                logger.info(
+                                                    "✅ vLLM server ready at %s",
+                                                    vllm_server.base_url,
+                                                )
+                                                # Register cleanup on shutdown
+                                                self.register_shutdown_callback(
+                                                    vllm_server._stop_server
+                                                )
+                                        else:
+                                            # Reload server with new checkpoint
+                                            logger.info(
+                                                "🔄 Reloading vLLM server with checkpoint window %s...",
+                                                checkpoint_window,
+                                            )
+                                            try:
+                                                await vllm_server.reload_with_new_checkpoint(
+                                                    str(checkpoint_path)
+                                                )
+                                                logger.info(
+                                                    "✅ vLLM server reloaded at %s",
+                                                    vllm_server.base_url,
+                                                )
+                                            except Exception as vllm_exc:
+                                                logger.error(
+                                                    "Failed to reload vLLM server: %s",
+                                                    vllm_exc,
+                                                )
                                 except Exception:
                                     logger.exception(
                                         "[miner] FAILED to load checkpoint for window %s from %s. "
