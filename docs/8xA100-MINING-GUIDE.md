@@ -197,8 +197,10 @@ BT_WALLET_COLD=your_coldkey_name
 BT_WALLET_HOT=your_hotkey_name
 
 # R2 Storage (required)
+# IMPORTANT: Bucket name MUST equal account_id for validators to find your files!
+# The chain commitment format uses account_id as the bucket identifier.
 R2_ACCOUNT_ID=your_account_id
-R2_BUCKET_ID=your_bucket_id
+R2_BUCKET_NAME=your_account_id  # Must match R2_ACCOUNT_ID!
 R2_WRITE_ACCESS_KEY_ID=your_write_key
 R2_WRITE_SECRET_ACCESS_KEY=your_write_secret
 R2_READ_ACCESS_KEY_ID=your_read_key
@@ -571,6 +573,30 @@ pm2 stop all
 # Delete all workers (removes from PM2)
 pm2 delete all
 ```
+
+### Summary Log Monitoring
+
+Each worker logs a `[SUMMARY]` line after completing a window, making it easy to monitor progress:
+
+```bash
+# Live filtered view of summary lines from all workers
+tail -f /var/log/grail/worker-*-out.log | grep "\[SUMMARY\]"
+
+# Filter summary lines from existing logs
+grep "\[SUMMARY\]" /var/log/grail/worker-*-out.log
+```
+
+**Example output:**
+```
+[SUMMARY] W0 | window=7149180 | rollouts=156 | UPLOADED | 22:45:30
+[SUMMARY] W1 | window=7149180 | rollouts=18 | STAGED | 22:45:28
+[SUMMARY] W2 | window=7149180 | rollouts=20 | STAGED | 22:45:27
+[SUMMARY] W3 | window=7149180 | rollouts=19 | STAGED | 22:45:26
+...
+```
+
+- **W0 UPLOADED**: Leader aggregated all rollouts and uploaded to R2
+- **W1-W7 STAGED**: Followers staged their rollouts for leader to aggregate
 
 ### GPU Monitoring
 
