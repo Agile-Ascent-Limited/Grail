@@ -60,6 +60,8 @@ logger = logging.getLogger(__name__)
 
 # Multi-worker configuration
 MULTI_WORKER_ENABLED = int(os.getenv("GRAIL_TOTAL_WORKERS", "1")) > 1
+WORKER_ID = int(os.getenv("GRAIL_WORKER_ID", "0"))
+IS_LEADER_WORKER = WORKER_ID == 0
 
 CHECKPOINT_PREFIX = "grail/checkpoints/"
 
@@ -289,8 +291,10 @@ class CheckpointManager:
     async def _get_checkpoint_multi_worker(self, window: int, local_dir: Path) -> Path | None:
         """Get checkpoint with cross-process coordination for multi-worker setups.
 
-        Uses file-based locking to ensure only one worker downloads each checkpoint.
-        Other workers wait for the download to complete.
+        LEADER-ONLY DOWNLOADS: Only worker 0 (leader) downloads checkpoints.
+        Followers wait for the leader to complete and use the cached checkpoint.
+        This prevents race conditions and keeps followers generating rollouts
+        while the leader handles downloads.
 
         Args:
             window: Checkpoint window number
@@ -302,40 +306,80 @@ class CheckpointManager:
         # Clean up any stale locks from crashed workers
         cleanup_stale_locks(self.cache_root)
 
+        # Check if checkpoint already exists and is valid (all workers)
+        if local_dir.exists():
+            try:
+                manifest = await self._load_manifest(local_dir)
+                if manifest and await self._verify_integrity(local_dir, manifest):
+                    logger.debug(
+                        "✅ Using cached checkpoint %s (worker %s)",
+                        window,
+                        WORKER_ID,
+                    )
+                    return local_dir
+            except Exception as exc:
+                logger.warning("Cached checkpoint verification failed: %s", exc)
+                # Only leader should clean up bad checkpoints
+                if IS_LEADER_WORKER:
+                    shutil.rmtree(local_dir, ignore_errors=True)
+
+        # FOLLOWER PATH: Wait for leader to download, never download ourselves
+        if not IS_LEADER_WORKER:
+            logger.info(
+                "Worker %s waiting for leader to download checkpoint %s",
+                WORKER_ID,
+                window,
+            )
+            # Check for existing lock/complete marker
+            lock = CheckpointLock(self.cache_root, window)
+            if await lock.wait_for_download(timeout=600):  # 10 min timeout
+                # Leader completed download
+                if local_dir.exists():
+                    try:
+                        manifest = await self._load_manifest(local_dir)
+                        if manifest and await self._verify_integrity(local_dir, manifest):
+                            logger.info(
+                                "✅ Worker %s using checkpoint %s downloaded by leader",
+                                WORKER_ID,
+                                window,
+                            )
+                            return local_dir
+                    except Exception as exc:
+                        logger.warning("Cached checkpoint verification failed: %s", exc)
+            # Timeout or checkpoint not found after wait
+            logger.warning(
+                "Worker %s: checkpoint %s not available after waiting for leader",
+                WORKER_ID,
+                window,
+            )
+            return None
+
+        # LEADER PATH: Acquire lock and download
         async with CheckpointLock(self.cache_root, window) as lock:
             if not lock.should_download:
-                # Another worker is downloading - wait for it
+                # Another process already downloading (shouldn't happen with leader-only,
+                # but handle gracefully for safety)
+                logger.info("Leader waiting for existing download of checkpoint %s", window)
                 if await lock.wait_for_download():
-                    # Download completed by another worker
                     if local_dir.exists():
                         try:
                             manifest = await self._load_manifest(local_dir)
                             if manifest and await self._verify_integrity(local_dir, manifest):
-                                logger.info(
-                                    "✅ Using checkpoint %s downloaded by another worker",
-                                    window,
-                                )
                                 return local_dir
                         except Exception as exc:
                             logger.warning("Cached checkpoint verification failed: %s", exc)
-                    # Fall through to download ourselves
-                    logger.warning(
-                        "Checkpoint %s not found after waiting, will download",
-                        window,
-                    )
-                else:
-                    # Timeout or error waiting
-                    logger.warning(
-                        "Timeout waiting for checkpoint %s, will try downloading",
-                        window,
-                    )
 
-            # This worker should download (or retry after failed wait)
+            # Leader performs the download
+            logger.info("Leader (worker 0) downloading checkpoint %s", window)
             result = await self._do_checkpoint_download(window, local_dir)
 
             if result is not None:
-                # Mark download as complete for other workers
+                # Mark download as complete for follower workers
                 lock.mark_complete()
+                logger.info(
+                    "✅ Leader completed checkpoint %s download, followers can proceed",
+                    window,
+                )
 
             return result
 
