@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 
 # Load environment variables as early as possible so any module-level
 # reads (e.g., in shared.constants) see updated values from .env.
-load_dotenv(override=True)
+# NOTE: override=False so PM2/systemd environment variables take precedence
+# over .env file (important for multi-worker GRAIL_WORKER_ID).
+load_dotenv(override=False)
 
 from .environments import (  # noqa: F401, E402, E501, F403, F405
     # Loop and rollouts

@@ -28,8 +28,10 @@ from ..shared.logging import ContextFilter
 
 # Load environment variables once for the whole CLI at import time so that
 # modules imported during subcommand registration can read them.
+# NOTE: override=False so PM2/systemd environment variables take precedence
+# over .env file (important for multi-worker GRAIL_WORKER_ID).
 try:
-    load_dotenv(override=True)
+    load_dotenv(override=False)
 except Exception:
     # Safe to ignore dotenv issues; continue with system env
     pass
