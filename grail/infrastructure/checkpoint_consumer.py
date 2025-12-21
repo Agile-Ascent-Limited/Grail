@@ -323,16 +323,19 @@ class CheckpointManager:
                 if IS_LEADER_WORKER:
                     shutil.rmtree(local_dir, ignore_errors=True)
 
-        # FOLLOWER PATH: Wait for leader to download, never download ourselves
+        # FOLLOWER PATH: Wait for leader to download checkpoint.
+        # All workers MUST use the same checkpoint - validator hard-fails if
+        # checkpoint_window doesn't match. So followers must block until leader
+        # finishes downloading.
         if not IS_LEADER_WORKER:
             logger.info(
                 "Worker %s waiting for leader to download checkpoint %s",
                 WORKER_ID,
                 window,
             )
-            # Check for existing lock/complete marker
+            # Wait for leader to complete download (up to 5 min - typical download is 2-3 min)
             lock = CheckpointLock(self.cache_root, window)
-            if await lock.wait_for_download(timeout=600):  # 10 min timeout
+            if await lock.wait_for_download(timeout=300):
                 # Leader completed download
                 if local_dir.exists():
                     try:
@@ -346,7 +349,8 @@ class CheckpointManager:
                             return local_dir
                     except Exception as exc:
                         logger.warning("Cached checkpoint verification failed: %s", exc)
-            # Timeout or checkpoint not found after wait
+
+            # Timeout or checkpoint not found - return None (miner will retry)
             logger.warning(
                 "Worker %s: checkpoint %s not available after waiting for leader",
                 WORKER_ID,
@@ -662,7 +666,9 @@ class CheckpointManager:
 
     async def _download_files(self, metadata: CheckpointMetadata, tmp_dir: Path) -> None:
         # Higher concurrency for fast networks (8x A100 setups typically have 10+ Gbps)
-        semaphore = asyncio.Semaphore(16)
+        # Checkpoints are time-critical, so use aggressive parallelism
+        concurrency = int(os.getenv("GRAIL_CHECKPOINT_DOWNLOAD_CONCURRENCY", "24"))
+        semaphore = asyncio.Semaphore(concurrency)
 
         async def _download(filename: str) -> None:
             async with semaphore:

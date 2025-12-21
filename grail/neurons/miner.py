@@ -40,6 +40,7 @@ from grail.shared.window_utils import (
     log_window_wait_initial,
     log_window_wait_periodic,
 )
+from datetime import datetime
 
 from .base import BaseNeuron
 
@@ -504,6 +505,11 @@ class MinerNeuron(BaseNeuron):
                                             f"✅ Successfully uploaded window {window_start} "
                                             f"with {len(all_inferences)} aggregated rollouts"
                                         )
+                                        # Clean summary line for easy PM2 log monitoring
+                                        ts = datetime.now().strftime("%H:%M:%S")
+                                        logger.info(
+                                            f"[SUMMARY] W0 | window={window_start} | rollouts={len(all_inferences)} | UPLOADED | {ts}"
+                                        )
                                         self.heartbeat()
                                         if monitor:
                                             await monitor.log_counter("mining/successful_uploads")
@@ -522,6 +528,11 @@ class MinerNeuron(BaseNeuron):
                                     f"📦 Worker {worker_config.worker_id} staged "
                                     f"{len(inferences)} rollouts, leader will upload"
                                 )
+                                # Clean summary line for easy PM2 log monitoring
+                                ts = datetime.now().strftime("%H:%M:%S")
+                                logger.info(
+                                    f"[SUMMARY] W{worker_config.worker_id} | window={window_start} | rollouts={len(inferences)} | STAGED | {ts}"
+                                )
                                 if monitor:
                                     await monitor.log_gauge("mining/staged_rollouts", len(inferences))
                         else:
@@ -538,6 +549,11 @@ class MinerNeuron(BaseNeuron):
                                 logger.info(
                                     f"✅ Successfully uploaded window {window_start} "
                                     f"with {len(inferences)} rollouts"
+                                )
+                                # Clean summary line for easy PM2 log monitoring
+                                ts = datetime.now().strftime("%H:%M:%S")
+                                logger.info(
+                                    f"[SUMMARY] W0 | window={window_start} | rollouts={len(inferences)} | UPLOADED | {ts}"
                                 )
                                 self.heartbeat()
                                 if monitor:
