@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 # Barrier file location (relative to cache root)
 BARRIER_DIR = ".worker-barrier"
 BARRIER_FILE = "leader-ready.json"
+RUN_ID_FILE = "run-id.txt"
 
 # How long barrier data is considered fresh (seconds)
 BARRIER_MAX_AGE = 600  # 10 minutes
@@ -56,9 +58,24 @@ class WorkerBarrier:
         self.total_workers = total_workers
         self.is_leader = worker_id == 0
 
-        # Barrier file path
+        # Barrier file paths
         self.barrier_dir = self.cache_root / BARRIER_DIR
         self.barrier_file = self.barrier_dir / BARRIER_FILE
+        self.run_id_file = self.barrier_dir / RUN_ID_FILE
+
+        # Generate or read run ID
+        if self.is_leader:
+            # Leader generates new run ID and cleans up stale files
+            self._ensure_barrier_dir()
+            self.run_id = str(uuid.uuid4())[:8]  # Short unique ID
+            self._cleanup_stale_barrier()
+            # Write run ID immediately so followers can read it
+            with open(self.run_id_file, "w") as f:
+                f.write(self.run_id)
+            logger.info("Leader started run_id=%s", self.run_id)
+        else:
+            # Follower reads run ID (will wait if not yet available)
+            self.run_id: str | None = None
 
         logger.info(
             "WorkerBarrier initialized: worker_id=%d, is_leader=%s, barrier_file=%s",
@@ -66,6 +83,15 @@ class WorkerBarrier:
             self.is_leader,
             self.barrier_file,
         )
+
+    def _cleanup_stale_barrier(self) -> None:
+        """Leader removes any existing barrier file on startup."""
+        if self.barrier_file.exists():
+            try:
+                self.barrier_file.unlink()
+                logger.info("Leader removed stale barrier file from previous run")
+            except IOError as e:
+                logger.warning("Failed to remove stale barrier file: %s", e)
 
     def _ensure_barrier_dir(self) -> None:
         """Create barrier directory if needed."""

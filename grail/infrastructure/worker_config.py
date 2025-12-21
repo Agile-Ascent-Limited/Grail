@@ -45,8 +45,19 @@ class WorkerConfig:
         Returns:
             WorkerConfig instance
         """
-        worker_id = int(os.getenv("GRAIL_WORKER_ID", "0"))
-        total_workers = int(os.getenv("GRAIL_TOTAL_WORKERS", "1"))
+        worker_id_str = os.getenv("GRAIL_WORKER_ID", "0")
+        total_workers_str = os.getenv("GRAIL_TOTAL_WORKERS", "1")
+        worker_id = int(worker_id_str)
+        total_workers = int(total_workers_str)
+
+        # Debug logging for environment variable issues
+        logger.info(
+            "WorkerConfig: GRAIL_WORKER_ID=%r, GRAIL_TOTAL_WORKERS=%r (parsed: %d/%d)",
+            worker_id_str,
+            total_workers_str,
+            worker_id,
+            total_workers,
+        )
 
         if worker_id < 0 or worker_id >= total_workers:
             raise ValueError(
