@@ -12,6 +12,11 @@ from ..logging_utils import await_with_stall_log
 
 logger = logging.getLogger(__name__)
 
+# Timeout constants for subtensor lifecycle operations
+# These prevent indefinite hangs during connection management
+SUBTENSOR_CLOSE_TIMEOUT = float(os.getenv("BT_CLOSE_TIMEOUT", "30.0"))
+SUBTENSOR_INIT_TIMEOUT = float(os.getenv("BT_INIT_TIMEOUT", "120.0"))
+
 
 class ResilientSubtensor:
     """
@@ -105,7 +110,19 @@ class ResilientSubtensor:
         return failure_count >= circuit_threshold
 
     async def _restart_subtensor(self) -> None:
-        """Restart subtensor connection."""
+        """Restart subtensor connection with timeouts to prevent indefinite hangs.
+
+        This method is called when:
+        1. Connection has been idle for >60s (stale WebSocket)
+        2. Circuit breaker opens after repeated failures
+
+        Both close() and initialize() operations have hard timeouts to ensure
+        the event loop is never blocked indefinitely, which would prevent
+        heartbeat callbacks and trigger watchdog shutdown.
+
+        Raises:
+            asyncio.TimeoutError: If initialization times out after SUBTENSOR_INIT_TIMEOUT
+        """
         logger.warning("🔄 Restarting subtensor connection...")
         subtensor = object.__getattribute__(self, "_subtensor")
         network = (
@@ -114,20 +131,72 @@ class ResilientSubtensor:
             else os.getenv("BT_NETWORK", "finney")
         )
 
-        # Close old subtensor to prevent resource leaks
+        # Close old subtensor with timeout to prevent resource leaks
+        # If close hangs (e.g., half-open WebSocket), we continue anyway
         try:
             if hasattr(subtensor, "close"):
                 if asyncio.iscoroutinefunction(subtensor.close):
-                    await subtensor.close()
+                    try:
+                        await asyncio.wait_for(
+                            subtensor.close(),
+                            timeout=SUBTENSOR_CLOSE_TIMEOUT,
+                        )
+                        logger.debug("Closed old subtensor connection")
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "⏱️ Timeout closing old subtensor after %.0fs, continuing anyway",
+                            SUBTENSOR_CLOSE_TIMEOUT,
+                        )
+                    except asyncio.CancelledError:
+                        # Propagate real cancellation
+                        raise
                 else:
                     subtensor.close()
-                logger.debug("Closed old subtensor connection")
+                    logger.debug("Closed old subtensor connection (sync)")
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             logger.warning("Failed to close old subtensor: %s", exc)
 
+        # Create and initialize new subtensor with timeout
+        # If this times out, we raise to let caller handle it
         new_subtensor = bt.async_subtensor(network=network)
-        await new_subtensor.initialize()
+        try:
+            await asyncio.wait_for(
+                new_subtensor.initialize(),
+                timeout=SUBTENSOR_INIT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "❌ Timeout initializing new subtensor after %.0fs",
+                SUBTENSOR_INIT_TIMEOUT,
+            )
+            # Try to close the failed connection to prevent resource leak
+            try:
+                if hasattr(new_subtensor, "close"):
+                    if asyncio.iscoroutinefunction(new_subtensor.close):
+                        # Short timeout for cleanup
+                        await asyncio.wait_for(new_subtensor.close(), timeout=5.0)
+                    else:
+                        new_subtensor.close()
+            except Exception:
+                pass
+            raise
+        except asyncio.CancelledError:
+            # Clean up on cancellation
+            try:
+                if hasattr(new_subtensor, "close"):
+                    if asyncio.iscoroutinefunction(new_subtensor.close):
+                        await asyncio.wait_for(new_subtensor.close(), timeout=5.0)
+                    else:
+                        new_subtensor.close()
+            except Exception:
+                pass
+            raise
+
         object.__setattr__(self, "_subtensor", new_subtensor)
+        # Update last call timestamp to prevent immediate idle detection
+        object.__setattr__(self, "_last_call_timestamp", time.time())
         self._reset_circuit_breaker()
         logger.info("✅ Subtensor connection restarted")
 
@@ -136,11 +205,24 @@ class ResilientSubtensor:
         await self._restart_subtensor()
 
     async def close(self) -> None:
-        """Close the underlying subtensor connection."""
+        """Close the underlying subtensor connection with timeout."""
         subtensor = object.__getattribute__(self, "_subtensor")
         if hasattr(subtensor, "close"):
             if asyncio.iscoroutinefunction(subtensor.close):
-                await subtensor.close()
+                try:
+                    await asyncio.wait_for(
+                        subtensor.close(),
+                        timeout=SUBTENSOR_CLOSE_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "⏱️ Timeout closing subtensor after %.0fs",
+                        SUBTENSOR_CLOSE_TIMEOUT,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("Error closing subtensor: %s", exc)
             else:
                 subtensor.close()
 
@@ -199,7 +281,13 @@ class ResilientSubtensor:
 
         if self._should_open_circuit():
             self._open_circuit_breaker()
-            asyncio.create_task(self._restart_subtensor())
+            # Schedule restart as background task with error handling
+            restart_task = asyncio.create_task(
+                self._restart_subtensor(),
+                name="subtensor_restart",
+            )
+            # Add callback to log any errors from the background restart
+            restart_task.add_done_callback(self._on_restart_complete)
 
         # Try to return cached metagraph as last resort
         if method_name == "metagraph" and args:
@@ -210,6 +298,19 @@ class ResilientSubtensor:
 
         logger.error("❌ %s failed after %d attempts", method_name, retries)
         raise TimeoutError(f"{method_name} failed after {retries} attempts")
+
+    def _on_restart_complete(self, task: asyncio.Task) -> None:
+        """Callback for background restart task completion."""
+        try:
+            # Check if task raised an exception
+            exc = task.exception()
+            if exc is not None:
+                logger.error("⚠️ Background subtensor restart failed: %s", exc)
+        except asyncio.CancelledError:
+            logger.debug("Background subtensor restart was cancelled")
+        except asyncio.InvalidStateError:
+            # Task not done yet (shouldn't happen in done callback)
+            pass
 
     async def _call_with_retry(
         self, method_name: str, method: Any, args: tuple, kwargs: dict
@@ -227,11 +328,11 @@ class ResilientSubtensor:
         if method_name == "metagraph":
             timeout = timeout * 2
 
-        # Double timeout if connection has been idle for 20+ seconds
+        # Restart connection if it has been idle for too long
         # Research-based threshold:
         # - Bittensor WebSocket auto-closes after 10s inactivity
         # - Substrate layer closes after ~60s inactivity
-        # - 20s catches stale connections early without false positives
+        # - 60s catches stale connections while avoiding false positives
         # - Critical for upload worker (40-300s idle during R2 uploads)
         last_call_timestamp = object.__getattribute__(self, "_last_call_timestamp")
         idle_duration = time.time() - last_call_timestamp
@@ -241,7 +342,25 @@ class ResilientSubtensor:
                 idle_duration,
                 method_name,
             )
-            await self._restart_subtensor()
+            # Update timestamp BEFORE restart attempt to prevent retry loops
+            # Even if restart fails, we don't want to immediately retry
+            object.__setattr__(self, "_last_call_timestamp", time.time())
+            try:
+                await self._restart_subtensor()
+            except asyncio.TimeoutError:
+                # Restart timed out - double the timeout and try the call anyway
+                # The old connection might still work, or we'll fail fast
+                logger.warning(
+                    "⚠️ Subtensor restart timed out, attempting call with doubled timeout"
+                )
+                timeout = timeout * 2
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "⚠️ Subtensor restart failed (%s), attempting call anyway", exc
+                )
+                timeout = timeout * 2
 
         # Retry loop
         for retry in range(retries):
@@ -380,12 +499,33 @@ async def create_subtensor(*, resilient: bool = True) -> bt.subtensor | Resilien
         logger.info("Connecting to Bittensor %s (network=%s)", label, network)
         subtensor = bt.async_subtensor(network=network)
 
-    await await_with_stall_log(
-        subtensor.initialize(),
-        label="subtensor.initialize",
-        threshold_seconds=120.0,
-        log=logger,
-    )
+    # Initialize with hard timeout to prevent indefinite hangs
+    # await_with_stall_log only warns, so we wrap with wait_for for hard timeout
+    try:
+        await asyncio.wait_for(
+            await_with_stall_log(
+                subtensor.initialize(),
+                label="subtensor.initialize",
+                threshold_seconds=60.0,  # Warn after 60s
+                log=logger,
+            ),
+            timeout=SUBTENSOR_INIT_TIMEOUT,  # Hard timeout (default 120s)
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "❌ Subtensor initialization timed out after %.0fs",
+            SUBTENSOR_INIT_TIMEOUT,
+        )
+        # Clean up the failed connection
+        try:
+            if hasattr(subtensor, "close"):
+                if asyncio.iscoroutinefunction(subtensor.close):
+                    await asyncio.wait_for(subtensor.close(), timeout=5.0)
+                else:
+                    subtensor.close()
+        except Exception:
+            pass
+        raise
 
     if resilient:
         # Wrap with resilience layer for production use
