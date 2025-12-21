@@ -94,6 +94,8 @@ After setup, add to your `.env`:
 GRAIL_VLLM_PYTHON=/root/Grail/tools/vllm-server/.venv/bin/python
 ```
 
+**Important:** For mining, vLLM servers must be started **before** the miners. See [Starting vLLM Servers](#starting-vllm-servers) section below.
+
 **Performance comparison:**
 
 | Backend | Throughput | Setup Complexity |
@@ -223,7 +225,7 @@ Create `ecosystem.config.js` in the grail directory:
 // ecosystem.config.js - PM2 configuration for 8x A100 mining with vLLM
 module.exports = {
   apps: [
-    // Worker 0 - GPU 0
+    // Worker 0 - GPU 0, vLLM port 30000
     {
       name: 'grail-miner-0',
       script: '.venv/bin/grail',
@@ -235,6 +237,7 @@ module.exports = {
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '0',
         GRAIL_USE_VLLM: '1',
+        GRAIL_VLLM_URL: 'http://127.0.0.1:30000',  // Dedicated vLLM server for this worker
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
@@ -244,7 +247,7 @@ module.exports = {
       out_file: '/var/log/grail/worker-0-out.log',
       merge_logs: true,
     },
-    // Worker 1 - GPU 1
+    // Worker 1 - GPU 1, vLLM port 30001
     {
       name: 'grail-miner-1',
       script: '.venv/bin/grail',
@@ -256,6 +259,7 @@ module.exports = {
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '1',
         GRAIL_USE_VLLM: '1',
+        GRAIL_VLLM_URL: 'http://127.0.0.1:30001',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
@@ -265,7 +269,7 @@ module.exports = {
       out_file: '/var/log/grail/worker-1-out.log',
       merge_logs: true,
     },
-    // Worker 2 - GPU 2
+    // Worker 2 - GPU 2, vLLM port 30002
     {
       name: 'grail-miner-2',
       script: '.venv/bin/grail',
@@ -277,6 +281,7 @@ module.exports = {
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '2',
         GRAIL_USE_VLLM: '1',
+        GRAIL_VLLM_URL: 'http://127.0.0.1:30002',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
@@ -286,7 +291,7 @@ module.exports = {
       out_file: '/var/log/grail/worker-2-out.log',
       merge_logs: true,
     },
-    // Worker 3 - GPU 3
+    // Worker 3 - GPU 3, vLLM port 30003
     {
       name: 'grail-miner-3',
       script: '.venv/bin/grail',
@@ -298,6 +303,7 @@ module.exports = {
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '3',
         GRAIL_USE_VLLM: '1',
+        GRAIL_VLLM_URL: 'http://127.0.0.1:30003',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
@@ -307,7 +313,7 @@ module.exports = {
       out_file: '/var/log/grail/worker-3-out.log',
       merge_logs: true,
     },
-    // Worker 4 - GPU 4
+    // Worker 4 - GPU 4, vLLM port 30004
     {
       name: 'grail-miner-4',
       script: '.venv/bin/grail',
@@ -319,6 +325,7 @@ module.exports = {
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '4',
         GRAIL_USE_VLLM: '1',
+        GRAIL_VLLM_URL: 'http://127.0.0.1:30004',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
@@ -328,7 +335,7 @@ module.exports = {
       out_file: '/var/log/grail/worker-4-out.log',
       merge_logs: true,
     },
-    // Worker 5 - GPU 5
+    // Worker 5 - GPU 5, vLLM port 30005
     {
       name: 'grail-miner-5',
       script: '.venv/bin/grail',
@@ -340,6 +347,7 @@ module.exports = {
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '5',
         GRAIL_USE_VLLM: '1',
+        GRAIL_VLLM_URL: 'http://127.0.0.1:30005',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
@@ -349,7 +357,7 @@ module.exports = {
       out_file: '/var/log/grail/worker-5-out.log',
       merge_logs: true,
     },
-    // Worker 6 - GPU 6
+    // Worker 6 - GPU 6, vLLM port 30006
     {
       name: 'grail-miner-6',
       script: '.venv/bin/grail',
@@ -361,6 +369,7 @@ module.exports = {
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '6',
         GRAIL_USE_VLLM: '1',
+        GRAIL_VLLM_URL: 'http://127.0.0.1:30006',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
@@ -370,7 +379,7 @@ module.exports = {
       out_file: '/var/log/grail/worker-6-out.log',
       merge_logs: true,
     },
-    // Worker 7 - GPU 7
+    // Worker 7 - GPU 7, vLLM port 30007
     {
       name: 'grail-miner-7',
       script: '.venv/bin/grail',
@@ -382,6 +391,7 @@ module.exports = {
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '7',
         GRAIL_USE_VLLM: '1',
+        GRAIL_VLLM_URL: 'http://127.0.0.1:30007',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
@@ -398,6 +408,86 @@ module.exports = {
 > **Note:** The `interpreter: 'none'` setting is required because `.venv/bin/grail` is a Python entry point script with a shebang. This tells PM2 to execute the script directly rather than trying to run it with Node.js.
 >
 > If not using vLLM, change `GRAIL_USE_VLLM: '0'` and `GRAIL_USE_FLASH_ATTENTION: '1'`.
+
+---
+
+## Starting vLLM Servers
+
+When using vLLM backend (`GRAIL_USE_VLLM=1`), you must start dedicated vLLM servers **before** starting the miners. Each GPU gets its own vLLM server on a dedicated port.
+
+### vLLM Server Architecture
+
+```
+GPU 0 -> vLLM :30000 <- grail-miner-0 (GRAIL_VLLM_URL=http://127.0.0.1:30000)
+GPU 1 -> vLLM :30001 <- grail-miner-1 (GRAIL_VLLM_URL=http://127.0.0.1:30001)
+GPU 2 -> vLLM :30002 <- grail-miner-2 (GRAIL_VLLM_URL=http://127.0.0.1:30002)
+...
+GPU 7 -> vLLM :30007 <- grail-miner-7 (GRAIL_VLLM_URL=http://127.0.0.1:30007)
+```
+
+### Start vLLM Servers
+
+```bash
+# Start 8 vLLM servers (one per GPU, ports 30000-30007)
+bash scripts/start_vllm_servers.sh
+
+# This takes 2-5 minutes to load the model on each GPU
+# Script waits until all servers are ready before exiting
+```
+
+### Check vLLM Server Status
+
+```bash
+bash scripts/check_vllm_servers.sh
+```
+
+Expected output:
+```
+========================================
+vLLM Server Status
+========================================
+
+GPU 0 (port 30000): HTTP=OK     PID 12345
+GPU 1 (port 30001): HTTP=OK     PID 12346
+...
+GPU 7 (port 30007): HTTP=OK     PID 12352
+
+All servers are ready!
+
+GPU Memory Usage:
+  GPU 0: 15234 / 81920 MiB
+  ...
+```
+
+### Stop vLLM Servers
+
+```bash
+bash scripts/stop_vllm_servers.sh
+```
+
+### vLLM Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GRAIL_VLLM_BASE_PORT` | `30000` | Starting port number |
+| `GRAIL_VLLM_NUM_SERVERS` | `8` | Number of servers to start |
+| `GRAIL_VLLM_GPU_MEMORY_UTIL` | `0.85` | GPU memory fraction for KV cache |
+| `GRAIL_VLLM_MAX_MODEL_LEN` | `4096` | Max context length |
+| `GRAIL_VLLM_MAX_NUM_SEQS` | `32` | Max concurrent sequences |
+
+### vLLM Troubleshooting
+
+**Servers crash on startup (torch.compile cache error):**
+```bash
+# Clear corrupted cache and restart
+rm -rf /root/.cache/vllm/torch_compile_cache*
+bash scripts/start_vllm_servers.sh
+```
+
+**Check server logs:**
+```bash
+cat /var/log/grail/vllm/vllm-server-0.log
+```
 
 ---
 
@@ -648,12 +738,16 @@ nano .env  # Edit with your wallet names, R2 credentials, etc.
 
 # 5. Create ecosystem.config.js (copy from guide above, update paths)
 
-# 6. Start miners
-mkdir -p /var/log/grail /var/cache/grail
+# 6. Start vLLM servers (if using vLLM)
+mkdir -p /var/log/grail/vllm /var/cache/grail
+bash scripts/start_vllm_servers.sh  # Wait for all 8 servers to be ready
+
+# 7. Start miners
 pm2 start ecosystem.config.js
 pm2 save
 
-# 7. Monitor
+# 8. Monitor
 pm2 logs
+bash scripts/check_vllm_servers.sh
 watch -n 1 nvidia-smi
 ```
