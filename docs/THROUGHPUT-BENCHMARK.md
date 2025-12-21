@@ -42,7 +42,7 @@ Requires wallet for GRAIL proofs. No R2 credentials or network connection requir
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--model` | `Qwen/Qwen2.5-3B-Instruct` | Model to benchmark |
+| `--model` | `Qwen/Qwen3-4B-Instruct-2507` | Model to benchmark (mainnet default) |
 | `--batch-sizes` | `4` | Comma-separated batch sizes (e.g., `1,2,4,8`) |
 | `--num-problems` | `10` | Problems per benchmark run |
 | `--workers` | `1` | Project throughput for N workers |
@@ -199,7 +199,7 @@ python scripts/benchmark_throughput.py --batch-sizes 1,2
 
 Pre-download the model:
 ```bash
-python -c "from transformers import AutoModelForCausalLM; AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-3B-Instruct')"
+python -c "from transformers import AutoModelForCausalLM; AutoModelForCausalLM.from_pretrained('Qwen/Qwen3-4B-Instruct-2507')"
 ```
 
 ### Warmup Fails

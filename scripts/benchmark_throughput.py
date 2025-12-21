@@ -9,7 +9,7 @@ Usage:
     python scripts/benchmark_throughput.py
 
     # Test with specific model
-    python scripts/benchmark_throughput.py --model Qwen/Qwen2.5-3B-Instruct
+    python scripts/benchmark_throughput.py --model Qwen/Qwen3-4B-Instruct-2507
 
     # Test multi-GPU
     GRAIL_MULTI_GPU=1 python scripts/benchmark_throughput.py
@@ -269,7 +269,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="Qwen/Qwen2.5-3B-Instruct",
+        default="Qwen/Qwen3-4B-Instruct-2507",
         help="Model to benchmark (HuggingFace ID or local path)",
     )
     parser.add_argument(

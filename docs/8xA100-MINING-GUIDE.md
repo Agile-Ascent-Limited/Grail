@@ -25,20 +25,30 @@ For maximum throughput on 8x A100 with a **4B model** (current default), we run 
 # CUDA drivers (should be pre-installed on cloud instances)
 nvidia-smi  # Verify GPUs are visible
 
+# Git
+sudo apt-get install -y git
+
 # Node.js and PM2
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
 npm install -g pm2
 ```
 
-### 2. Install uv (Python Package Manager)
+### 2. Clone the Repository
+
+```bash
+git clone https://github.com/one-covenant/grail
+cd grail
+```
+
+### 3. Install uv (Python Package Manager)
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source ~/.bashrc  # or restart terminal
 ```
 
-### 3. Install Python Dependencies
+### 4. Install Python Dependencies
 
 Follow the official installation from [docs/miner.md](miner.md):
 
@@ -67,7 +77,7 @@ python -c "import flash_attn; print(flash_attn.__version__)"
 - If flash-attn fails, mining still works without it (just ~30% slower)
 - Do NOT install bitsandbytes - it breaks torch version compatibility
 
-### 4. Wallet Setup
+### 5. Wallet Setup
 
 **Regenerate existing wallet from mnemonic (if migrating to new server):**
 ```bash
@@ -88,6 +98,31 @@ btcli wallet new_hotkey --wallet.name YOUR_WALLET --wallet.hotkey YOUR_HOTKEY
 ```bash
 btcli subnet register --netuid 81 --wallet.name YOUR_WALLET --wallet.hotkey YOUR_HOTKEY
 ```
+
+**Verify wallet is configured:**
+```bash
+btcli w list
+# Should show your coldkey and hotkey
+```
+
+---
+
+## Verify Setup (Optional)
+
+Before starting production mining, you can run the benchmark to test throughput:
+
+```bash
+# Set wallet environment variables
+export BT_WALLET_COLD=your_coldkey_name
+export BT_WALLET_HOT=your_hotkey_name
+
+# Run benchmark (requires wallet for GRAIL proofs)
+GRAIL_USE_FLASH_ATTENTION=1 python scripts/benchmark_throughput.py --num-problems 5 --workers 8
+```
+
+Expected output shows rollouts/second per worker. With 8 workers, multiply by 8 for total throughput.
+
+See [THROUGHPUT-BENCHMARK.md](THROUGHPUT-BENCHMARK.md) for detailed benchmark options.
 
 ---
 
@@ -534,29 +569,34 @@ With the superlinear scoring formula `score = unique_rollouts^4.0`:
 ## Quick Start Summary
 
 ```bash
-# 1. Install uv
+# 1. Install uv and clone repo
 curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.bashrc
+git clone https://github.com/one-covenant/grail && cd grail
 
-# 2. Setup
-cd /path/to/grail
+# 2. Install dependencies
 uv venv --python 3.10 && source .venv/bin/activate
 uv sync
 uv pip install bittensor-cli                     # Wallet management
 uv pip install orjson
 uv pip install flash-attn --no-build-isolation   # Takes 10-15 min, optional
 
-# 3. Configure
+# 3. Setup wallet (if new server)
+btcli w regen_coldkey --wallet-name YOUR_WALLET --wallet_path "~/.bittensor/wallets/" --mnemonic "your 12 words" --overwrite
+btcli w regen_hotkey --wallet-name YOUR_WALLET --wallet.hotkey YOUR_HOTKEY --wallet_path "~/.bittensor/wallets/" --mnemonic "your 12 words" --overwrite
+btcli w list  # Verify wallet
+
+# 4. Configure environment
 cp .env.example .env
-nano .env  # Edit with your wallet, R2 credentials, etc.
+nano .env  # Edit with your wallet names, R2 credentials, etc.
 
-# 4. Create ecosystem.config.js (copy from above, update paths)
+# 5. Create ecosystem.config.js (copy from guide above, update paths)
 
-# 5. Start
+# 6. Start miners
 mkdir -p /var/log/grail /var/cache/grail
 pm2 start ecosystem.config.js
 pm2 save
 
-# 6. Monitor
+# 7. Monitor
 pm2 logs
 watch -n 1 nvidia-smi
 ```
