@@ -249,9 +249,17 @@ Create `ecosystem.config.js` in the grail directory:
 ```javascript
 // ecosystem.config.js - PM2 configuration for 8x A100 mining with vLLM
 // Each worker spawns its own vLLM server on port 30000 + worker_id
+//
+// LEADER-FOLLOWER PATTERN:
+//   Worker 0 (leader) starts immediately and initializes blockchain/checkpoints.
+//   Workers 1-7 (followers) start after 30s delay to let leader init first.
+
+// Delay in seconds for follower workers (1-7) to let leader initialize first
+const FOLLOWER_DELAY_SECONDS = 30;
+
 module.exports = {
   apps: [
-    // Worker 0 - GPU 0, vLLM auto-spawned on port 30000
+    // Worker 0 (LEADER) - GPU 0, starts immediately
     {
       name: 'grail-miner-0',
       script: '.venv/bin/grail',
@@ -272,11 +280,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-0-out.log',
       merge_logs: true,
     },
-    // Worker 1 - GPU 1, vLLM auto-spawned on port 30001
+    // Worker 1 (FOLLOWER) - GPU 1, starts after delay
     {
       name: 'grail-miner-1',
-      script: '.venv/bin/grail',
-      args: 'mine',
+      script: 'bash',
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -293,11 +301,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-1-out.log',
       merge_logs: true,
     },
-    // Worker 2 - GPU 2, vLLM auto-spawned on port 30002
+    // Worker 2 (FOLLOWER) - GPU 2, starts after delay
     {
       name: 'grail-miner-2',
-      script: '.venv/bin/grail',
-      args: 'mine',
+      script: 'bash',
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -314,11 +322,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-2-out.log',
       merge_logs: true,
     },
-    // Worker 3 - GPU 3, vLLM auto-spawned on port 30003
+    // Worker 3 (FOLLOWER) - GPU 3, starts after delay
     {
       name: 'grail-miner-3',
-      script: '.venv/bin/grail',
-      args: 'mine',
+      script: 'bash',
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -335,11 +343,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-3-out.log',
       merge_logs: true,
     },
-    // Worker 4 - GPU 4, vLLM auto-spawned on port 30004
+    // Worker 4 (FOLLOWER) - GPU 4, starts after delay
     {
       name: 'grail-miner-4',
-      script: '.venv/bin/grail',
-      args: 'mine',
+      script: 'bash',
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -356,11 +364,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-4-out.log',
       merge_logs: true,
     },
-    // Worker 5 - GPU 5, vLLM auto-spawned on port 30005
+    // Worker 5 (FOLLOWER) - GPU 5, starts after delay
     {
       name: 'grail-miner-5',
-      script: '.venv/bin/grail',
-      args: 'mine',
+      script: 'bash',
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -377,11 +385,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-5-out.log',
       merge_logs: true,
     },
-    // Worker 6 - GPU 6, vLLM auto-spawned on port 30006
+    // Worker 6 (FOLLOWER) - GPU 6, starts after delay
     {
       name: 'grail-miner-6',
-      script: '.venv/bin/grail',
-      args: 'mine',
+      script: 'bash',
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -398,11 +406,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-6-out.log',
       merge_logs: true,
     },
-    // Worker 7 - GPU 7, vLLM auto-spawned on port 30007
+    // Worker 7 (FOLLOWER) - GPU 7, starts after delay
     {
       name: 'grail-miner-7',
-      script: '.venv/bin/grail',
-      args: 'mine',
+      script: 'bash',
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -424,6 +432,8 @@ module.exports = {
 ```
 
 > **Note:** The `interpreter: 'none'` setting is required because `.venv/bin/grail` is a Python entry point script with a shebang. This tells PM2 to execute the script directly rather than trying to run it with Node.js.
+>
+> **Staggered Startup:** Workers 1-7 use `bash -c "sleep 30 && exec .venv/bin/grail mine"` to delay startup by 30 seconds. This ensures worker 0 (leader) has time to initialize blockchain and download checkpoints before followers start. Without this delay, all workers race to acquire checkpoint locks simultaneously.
 >
 > If not using vLLM, change `GRAIL_USE_VLLM: '0'` and `GRAIL_USE_FLASH_ATTENTION: '1'`.
 
@@ -736,6 +746,54 @@ echo ""
 echo "Recent Errors (last 10):"
 grep -h "ERROR\|Exception\|Traceback" /var/log/grail/worker-*-error.log 2>/dev/null | tail -10
 ```
+
+---
+
+## Rollout Aggregation
+
+In multi-worker setups, all workers generate rollouts but only **worker 0 (leader) uploads the aggregated file** to R2. This ensures the validator receives a single file with all rollouts.
+
+### How It Works
+
+1. Each worker generates rollouts and stages them locally
+2. Worker 0 waits for all workers to complete staging
+3. Worker 0 aggregates all rollouts into a single file
+4. Worker 0 uploads the combined file to R2
+
+### Verifying Aggregation
+
+Check the logs to verify aggregation is working:
+
+```bash
+# See all staging activity
+pm2 logs | grep -E "(staged|aggregated|Leader:)"
+
+# Check worker 0's logs for aggregation
+tail -f /var/log/grail/worker-0-out.log | grep -E "(aggregated|staged)"
+```
+
+**Expected log output:**
+```
+Worker 0 staged 175 rollouts for window 7149180
+Worker 1 staged 172 rollouts for window 7149180
+Worker 2 staged 168 rollouts for window 7149180
+...
+Worker 7 staged 180 rollouts for window 7149180
+Leader: 7/7 workers completed staging for window 7149180 (waited 2.5s)
+Leader aggregated 1392 total rollouts from 8 workers for window 7149180
+Successfully uploaded window 7149180 with 1392 aggregated rollouts
+```
+
+The total rollout count (1392 in this example) should be approximately 8x what each individual worker staged.
+
+### First Window Performance
+
+The **first window takes longer** due to:
+- Checkpoint download (5-10GB model files)
+- vLLM warmup and CUDA kernel compilation
+- Leader blockchain initialization
+
+Subsequent windows are faster as checkpoints are cached and vLLM is warmed up.
 
 ---
 
