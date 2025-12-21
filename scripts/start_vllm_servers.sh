@@ -70,7 +70,10 @@ start_vllm_server() {
 
     echo "Starting vLLM server on GPU $gpu_id, port $port..."
 
-    CUDA_VISIBLE_DEVICES=$gpu_id nohup "$VLLM_PYTHON" -m vllm.entrypoints.openai.api_server \
+    # Use per-GPU cache directory to avoid race conditions
+    CUDA_VISIBLE_DEVICES=$gpu_id \
+    VLLM_TORCH_COMPILE_CACHE="/root/.cache/vllm/torch_compile_cache_gpu$gpu_id" \
+    nohup "$VLLM_PYTHON" -m vllm.entrypoints.openai.api_server \
         --model "$MODEL_PATH" \
         --served-model-name "grail-model" \
         --host 127.0.0.1 \
@@ -82,6 +85,7 @@ start_vllm_server() {
         --max-model-len "$MAX_MODEL_LEN" \
         --max-num-seqs "$MAX_NUM_SEQS" \
         --trust-remote-code \
+        --enforce-eager \
         > "$log_file" 2>&1 &
 
     local pid=$!

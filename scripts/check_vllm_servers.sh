@@ -29,8 +29,8 @@ for ((i=0; i<NUM_SERVERS; i++)); do
         all_ready=false
     fi
 
-    # Check HTTP
-    if curl -s "http://127.0.0.1:$port/v1/models" > /dev/null 2>&1; then
+    # Check HTTP (2 second timeout)
+    if curl -s --max-time 2 "http://127.0.0.1:$port/v1/models" > /dev/null 2>&1; then
         http_status="OK"
     else
         http_status="FAILED"
