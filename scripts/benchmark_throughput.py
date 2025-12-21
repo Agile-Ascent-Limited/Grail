@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Standalone throughput benchmark for GRAIL mining without Bittensor.
+"""Throughput benchmark for GRAIL mining.
 
-This script measures rollout generation throughput to help tune your setup
-before connecting to the network.
+This script measures rollout generation throughput to help tune your setup.
+Requires a configured bittensor wallet (via BT_WALLET_COLD/BT_WALLET_HOT env vars).
 
 Usage:
     # Basic benchmark (uses defaults)
@@ -39,6 +39,7 @@ from pathlib import Path
 # Add grail to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import bittensor as bt
 import torch
 
 logging.basicConfig(
@@ -92,6 +93,15 @@ def get_gpu_info() -> dict:
     return info
 
 
+def load_wallet() -> bt.wallet:
+    """Load wallet from environment variables."""
+    coldkey = os.getenv("BT_WALLET_COLD", "default")
+    hotkey = os.getenv("BT_WALLET_HOT", "default")
+    wallet = bt.wallet(name=coldkey, hotkey=hotkey)
+    logger.info(f"Loaded wallet: {coldkey}/{hotkey} ({wallet.hotkey.ss58_address})")
+    return wallet
+
+
 def load_model_for_benchmark(model_name: str):
     """Load model with current environment configuration."""
     from grail.model.provider import get_model, get_tokenizer
@@ -111,6 +121,7 @@ def load_model_for_benchmark(model_name: str):
 def run_benchmark(
     model,
     tokenizer,
+    wallet: bt.wallet,
     batch_size: int,
     num_problems: int,
     seed: int = 42,
@@ -141,7 +152,7 @@ def run_benchmark(
             _env_factory,
             ROLLOUTS_PER_PROBLEM,
             warmup_hex,
-            wallet=None,  # No signing needed for benchmark
+            wallet=wallet,
             batch_size=min(batch_size, ROLLOUTS_PER_PROBLEM),
             seed=seed,
         )
@@ -170,7 +181,7 @@ def run_benchmark(
                 _env_factory,
                 ROLLOUTS_PER_PROBLEM,
                 problem_hex,
-                wallet=None,
+                wallet=wallet,
                 batch_size=min(batch_size, ROLLOUTS_PER_PROBLEM),
                 seed=seed + problem_idx,
             )
@@ -328,6 +339,11 @@ def main():
     print(f"  Problems per run: {args.num_problems}")
     print(f"  Projected workers: {args.workers}")
 
+    # Load wallet
+    print("\n" + "-" * 80)
+    print("Loading wallet...")
+    wallet = load_wallet()
+
     # Load model
     print("\n" + "-" * 80)
     model, tokenizer = load_model_for_benchmark(args.model)
@@ -340,6 +356,7 @@ def main():
             result = run_benchmark(
                 model,
                 tokenizer,
+                wallet=wallet,
                 batch_size=batch_size,
                 num_problems=args.num_problems,
                 seed=args.seed,

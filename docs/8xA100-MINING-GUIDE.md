@@ -49,6 +49,9 @@ cd /path/to/grail
 uv venv --python 3.10 && source .venv/bin/activate
 uv sync
 
+# Install bittensor CLI (for wallet management)
+uv pip install bittensor-cli
+
 # Install orjson for faster JSON (3-5x faster)
 uv pip install orjson
 
@@ -64,10 +67,25 @@ python -c "import flash_attn; print(flash_attn.__version__)"
 - If flash-attn fails, mining still works without it (just ~30% slower)
 - Do NOT install bitsandbytes - it breaks torch version compatibility
 
-### 4. Register Your Miner (if not already done)
+### 4. Wallet Setup
 
+**Regenerate existing wallet from mnemonic (if migrating to new server):**
 ```bash
-# Register on subnet 81
+# Regenerate coldkey from mnemonic
+btcli w regen_coldkey --wallet-name YOUR_WALLET --wallet_path "~/.bittensor/wallets/" --mnemonic "your 12 word mnemonic phrase here" --overwrite
+
+# Regenerate hotkey from mnemonic
+btcli w regen_hotkey --wallet-name YOUR_WALLET --wallet.hotkey YOUR_HOTKEY --wallet_path "~/.bittensor/wallets/" --mnemonic "your 12 word mnemonic phrase here" --overwrite
+```
+
+**Or create new wallet:**
+```bash
+btcli wallet new_coldkey --wallet.name YOUR_WALLET
+btcli wallet new_hotkey --wallet.name YOUR_WALLET --wallet.hotkey YOUR_HOTKEY
+```
+
+**Register on subnet (if not already done):**
+```bash
 btcli subnet register --netuid 81 --wallet.name YOUR_WALLET --wallet.hotkey YOUR_HOTKEY
 ```
 
@@ -523,8 +541,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.bashrc
 cd /path/to/grail
 uv venv --python 3.10 && source .venv/bin/activate
 uv sync
+uv pip install bittensor-cli                     # Wallet management
 uv pip install orjson
-uv pip install flash-attn --no-build-isolation  # Takes 10-15 min, optional
+uv pip install flash-attn --no-build-isolation   # Takes 10-15 min, optional
 
 # 3. Configure
 cp .env.example .env

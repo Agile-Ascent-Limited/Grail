@@ -1,6 +1,15 @@
 # GRAIL Throughput Benchmark Guide
 
-Test your mining throughput **without connecting to Bittensor**. This helps tune your setup before going live.
+Test your mining throughput **without connecting to Bittensor network**. This helps tune your setup before going live.
+
+## Prerequisites
+
+- Configured bittensor wallet (for GRAIL proof generation)
+- Set wallet environment variables:
+  ```bash
+  export BT_WALLET_COLD=your_coldkey_name
+  export BT_WALLET_HOT=your_hotkey_name
+  ```
 
 ## Quick Start
 
@@ -25,7 +34,7 @@ GRAIL_USE_FLASH_ATTENTION=1 python scripts/benchmark_throughput.py --num-problem
 - **GPU memory usage**: Peak VRAM consumption
 - **Success rate**: Percentage of rollouts that solve the problem
 
-No wallet, no R2 credentials, no network connection required.
+Requires wallet for GRAIL proofs. No R2 credentials or network connection required.
 
 ---
 
