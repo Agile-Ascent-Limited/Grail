@@ -26,7 +26,7 @@ from grail.infrastructure.checkpoint_consumer import (
     default_checkpoint_cache_root,
 )
 from grail.infrastructure.credentials import load_r2_credentials
-from grail.infrastructure.worker_barrier import WorkerBarrier
+from grail.infrastructure.worker_barrier import WorkerBarrier, RolloutStaging
 from grail.infrastructure.worker_config import WorkerConfig, log_multi_gpu_setup
 from grail.shared.schemas import Bucket
 from grail.model.provider import clear_model_and_tokenizer, get_model, get_tokenizer
@@ -162,6 +162,20 @@ class MinerNeuron(BaseNeuron):
                 worker_id=worker_config.worker_id,
                 total_workers=worker_config.total_workers,
             )
+
+            # Create rollout staging for multi-worker aggregation
+            # In multi-worker mode, all workers save locally, leader aggregates and uploads
+            rollout_staging: RolloutStaging | None = None
+            if worker_config.total_workers > 1:
+                rollout_staging = RolloutStaging(
+                    cache_root=default_checkpoint_cache_root(),
+                    worker_id=worker_config.worker_id,
+                    total_workers=worker_config.total_workers,
+                )
+                logger.info(
+                    "📦 Multi-worker mode: using rollout staging (worker %d/%d)",
+                    worker_config.worker_id, worker_config.total_workers,
+                )
 
             netuid = int(get_conf("BT_NETUID", get_conf("NETUID", 200)))
             chain_manager = None  # Only leader initializes this
@@ -460,29 +474,81 @@ class MinerNeuron(BaseNeuron):
                     )
 
                     if inferences:
-                        logger.info(
-                            f"📤 Uploading {len(inferences)} rollouts to R2 "
-                            f"for window {window_start}..."
-                        )
-                        try:
-                            upload_duration = await upload_inferences_with_metrics(
-                                wallet, window_start, inferences, credentials, monitor
-                            )
-                            timers.update_upload_time_ema(upload_duration)
-                            logger.info(
-                                f"✅ Successfully uploaded window {window_start} "
-                                f"with {len(inferences)} rollouts"
-                            )
-                            self.heartbeat()
-                            if monitor:
-                                await monitor.log_counter("mining/successful_uploads")
-                                await monitor.log_gauge("mining/uploaded_rollouts", len(inferences))
+                        # Multi-worker aggregation: all workers stage locally,
+                        # only leader aggregates and uploads to R2
+                        if rollout_staging is not None:
+                            # Save to local staging
+                            rollout_staging.save_rollouts(window_start, inferences)
 
-                        except Exception as e:
-                            logger.error(f"❌ Failed to upload window {window_start}: {e}")
-                            logger.error(traceback.format_exc())
-                            if monitor:
-                                await monitor.log_counter("mining/failed_uploads")
+                            if barrier.is_leader:
+                                # Leader: wait for other workers, aggregate, upload
+                                logger.info(
+                                    f"📦 Leader waiting for workers to stage rollouts..."
+                                )
+                                await rollout_staging.wait_for_workers(
+                                    window_start, timeout=30.0
+                                )
+                                all_inferences = rollout_staging.aggregate_rollouts(window_start)
+
+                                if all_inferences:
+                                    logger.info(
+                                        f"📤 Uploading {len(all_inferences)} aggregated rollouts "
+                                        f"to R2 for window {window_start}..."
+                                    )
+                                    try:
+                                        upload_duration = await upload_inferences_with_metrics(
+                                            wallet, window_start, all_inferences, credentials, monitor,
+                                        )
+                                        timers.update_upload_time_ema(upload_duration)
+                                        logger.info(
+                                            f"✅ Successfully uploaded window {window_start} "
+                                            f"with {len(all_inferences)} aggregated rollouts"
+                                        )
+                                        self.heartbeat()
+                                        if monitor:
+                                            await monitor.log_counter("mining/successful_uploads")
+                                            await monitor.log_gauge("mining/uploaded_rollouts", len(all_inferences))
+                                    except Exception as e:
+                                        logger.error(f"❌ Failed to upload window {window_start}: {e}")
+                                        logger.error(traceback.format_exc())
+                                        if monitor:
+                                            await monitor.log_counter("mining/failed_uploads")
+
+                                # Cleanup staging files
+                                rollout_staging.cleanup_window(window_start)
+                            else:
+                                # Follower: staging done, skip R2 upload
+                                logger.info(
+                                    f"📦 Worker {worker_config.worker_id} staged "
+                                    f"{len(inferences)} rollouts, leader will upload"
+                                )
+                                if monitor:
+                                    await monitor.log_gauge("mining/staged_rollouts", len(inferences))
+                        else:
+                            # Single-worker mode: upload directly
+                            logger.info(
+                                f"📤 Uploading {len(inferences)} rollouts to R2 "
+                                f"for window {window_start}..."
+                            )
+                            try:
+                                upload_duration = await upload_inferences_with_metrics(
+                                    wallet, window_start, inferences, credentials, monitor,
+                                )
+                                timers.update_upload_time_ema(upload_duration)
+                                logger.info(
+                                    f"✅ Successfully uploaded window {window_start} "
+                                    f"with {len(inferences)} rollouts"
+                                )
+                                self.heartbeat()
+                                if monitor:
+                                    await monitor.log_counter("mining/successful_uploads")
+                                    await monitor.log_gauge("mining/uploaded_rollouts", len(inferences))
+
+                            except Exception as e:
+                                logger.error(f"❌ Failed to upload window {window_start}: {e}")
+                                logger.error(traceback.format_exc())
+                                if monitor:
+                                    await monitor.log_counter("mining/failed_uploads")
                     else:
                         logger.warning(f"No inferences generated for window {window_start}")
                         if monitor:

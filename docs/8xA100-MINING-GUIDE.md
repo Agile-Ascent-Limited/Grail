@@ -11,11 +11,35 @@ For maximum throughput on 8x A100 with a **4B model** (current default), we run 
 │                     8x A100 Server                              │
 ├─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬─────┤
 │ Worker 0│ Worker 1│ Worker 2│ Worker 3│ Worker 4│ Worker 5│ ... │
-│  GPU 0  │  GPU 1  │  GPU 2  │  GPU 3  │  GPU 4  │  GPU 5  │ ... │
+│ (LEADER)│  GPU 1  │  GPU 2  │  GPU 3  │  GPU 4  │  GPU 5  │ ... │
+│  GPU 0  │         │         │         │         │         │     │
 ├─────────┴─────────┴─────────┴─────────┴─────────┴─────────┴─────┤
 │              Shared: Checkpoint Cache, R2 Storage               │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+### Leader-Follower Pattern
+
+To avoid redundant blockchain operations, workers use a **leader-follower pattern**:
+
+- **Worker 0 (Leader)**: Does all blockchain initialization:
+  - Connects to subtensor and fetches metagraph
+  - Initializes chain manager (spawns background process)
+  - Commits R2 credentials to blockchain
+  - Writes a barrier file when ready
+
+- **Workers 1-7 (Followers)**: Wait for leader, then proceed directly to mining:
+  - Wait for leader's barrier file (up to 5 minutes)
+  - Read shared data (trainer bucket info) from barrier
+  - Skip blockchain initialization entirely
+  - Start mining immediately
+
+**Benefits:**
+- 8 chain_worker processes → 1 process (saves memory)
+- 8 blockchain transactions → 1 transaction (faster startup)
+- Workers 1-7 start mining faster (no blockchain wait)
+
+The barrier file is stored at `~/.cache/grail/.worker-barrier/leader-ready.json`.
 
 ## Prerequisites
 
@@ -201,10 +225,11 @@ GRAIL_CACHE_DIR=/var/cache/grail
 # =============================================================================
 # MULTI-WORKER CONFIGURATION
 # =============================================================================
-# These are set per-worker via PM2 ecosystem file (see below)
-# GRAIL_WORKER_ID=0
-# GRAIL_TOTAL_WORKERS=8
-# CUDA_VISIBLE_DEVICES=0
+# IMPORTANT: Do NOT set these in .env - they are set per-worker via PM2!
+# If set here, they will be ignored (PM2 env vars take precedence).
+# GRAIL_WORKER_ID=0        # Set in ecosystem.config.js per worker
+# GRAIL_TOTAL_WORKERS=8    # Set in ecosystem.config.js per worker
+# CUDA_VISIBLE_DEVICES=0   # Set in ecosystem.config.js per worker
 
 # =============================================================================
 # OPTIONAL: WANDB MONITORING
@@ -607,7 +632,32 @@ Update `ecosystem.config.js`:
 
 ### Common Issues
 
-**1. CUDA Out of Memory**
+**1. All Workers Think They're Worker 0 (Leader)**
+
+If you see multiple workers logging "Leader signaled ready" or all workers trying to initialize blockchain:
+
+```bash
+# Check logs for worker ID detection
+pm2 logs | grep "WorkerConfig"
+# Should show: WorkerConfig: GRAIL_WORKER_ID='4', GRAIL_TOTAL_WORKERS='8' (parsed: 4/8)
+```
+
+**Cause:** The `.env` file contains `GRAIL_WORKER_ID=0` which overrides PM2's environment variables.
+
+**Fix:** Remove `GRAIL_WORKER_ID` and `GRAIL_TOTAL_WORKERS` from your `.env` file. These should ONLY be set via PM2's `ecosystem.config.js`.
+
+```bash
+# Edit .env and remove these lines (if present):
+# GRAIL_WORKER_ID=0
+# GRAIL_TOTAL_WORKERS=1
+
+# Then restart PM2 completely:
+pm2 delete all && pm2 start ecosystem.config.js
+```
+
+> **Technical note:** The grail package uses `load_dotenv(override=False)` so PM2 env vars take precedence. But if you have old code with `override=True`, update to latest.
+
+**2. CUDA Out of Memory**
 ```bash
 # Reduce batch size
 GRAIL_GENERATION_BATCH_SIZE=4  # or 2
@@ -616,13 +666,13 @@ GRAIL_GENERATION_BATCH_SIZE=4  # or 2
 GRAIL_QUANTIZATION=int8
 ```
 
-**2. Workers Competing for Checkpoint Download**
+**3. Workers Competing for Checkpoint Download**
 ```
 # This is handled automatically - workers coordinate via file locks
 # Only one worker downloads, others wait
 ```
 
-**3. Slow Upload Speed**
+**4. Slow Upload Speed**
 ```bash
 # Adjust bandwidth estimate
 GRAIL_UPLOAD_BANDWIDTH_MBPS=500  # Tune based on actual speed
@@ -631,7 +681,7 @@ GRAIL_UPLOAD_BANDWIDTH_MBPS=500  # Tune based on actual speed
 curl -o /dev/null -w "%{speed_upload}\n" --data-binary @/path/to/testfile https://httpbin.org/post
 ```
 
-**4. Flash Attention Not Working**
+**5. Flash Attention Not Working**
 ```bash
 # Reinstall - builds from source (takes 10-15 min)
 uv pip uninstall flash-attn

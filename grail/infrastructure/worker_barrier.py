@@ -293,3 +293,181 @@ def is_leader_worker() -> bool:
     """Check if this is the leader worker (worker 0)."""
     worker_id, _ = get_worker_config()
     return worker_id == 0
+
+
+# --------------------------------------------------------------------------- #
+#                   Rollout Staging for Multi-Worker Aggregation              #
+# --------------------------------------------------------------------------- #
+
+ROLLOUT_STAGING_DIR = ".rollout-staging"
+ROLLOUT_STAGING_MAX_AGE = 300  # 5 minutes - older files are stale
+
+
+class RolloutStaging:
+    """
+    Local staging for multi-worker rollout aggregation.
+
+    In multi-worker setups:
+    - All workers save rollouts to local staging files
+    - Workers 1-7 signal completion and skip R2 upload
+    - Worker 0 aggregates all workers' rollouts and uploads once
+
+    This ensures all rollouts end up in a single file for the validator.
+    """
+
+    def __init__(self, cache_root: Path, worker_id: int, total_workers: int = 8):
+        self.cache_root = Path(cache_root)
+        self.worker_id = worker_id
+        self.total_workers = total_workers
+        self.is_leader = worker_id == 0
+
+        self.staging_dir = self.cache_root / ROLLOUT_STAGING_DIR
+        self.staging_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_staging_file(self, window: int, wid: int) -> Path:
+        """Get path for a worker's staging file."""
+        return self.staging_dir / f"window-{window}-worker-{wid}.json"
+
+    def _get_done_file(self, window: int, wid: int) -> Path:
+        """Get path for a worker's done marker file."""
+        return self.staging_dir / f"window-{window}-worker-{wid}.done"
+
+    def save_rollouts(self, window: int, rollouts: list[dict]) -> None:
+        """Save rollouts to local staging file."""
+        staging_file = self._get_staging_file(window, self.worker_id)
+        done_file = self._get_done_file(window, self.worker_id)
+
+        # Write rollouts atomically
+        temp_file = staging_file.with_suffix(".tmp")
+        with open(temp_file, "w") as f:
+            json.dump({
+                "window": window,
+                "worker_id": self.worker_id,
+                "rollout_count": len(rollouts),
+                "rollouts": rollouts,
+                "timestamp": time.time(),
+            }, f)
+        temp_file.rename(staging_file)
+
+        # Write done marker
+        with open(done_file, "w") as f:
+            f.write(str(time.time()))
+
+        logger.info(
+            "Worker %d staged %d rollouts for window %d",
+            self.worker_id, len(rollouts), window,
+        )
+
+    def load_rollouts(self, window: int, worker_id: int) -> list[dict]:
+        """Load rollouts from a worker's staging file."""
+        staging_file = self._get_staging_file(window, worker_id)
+        if not staging_file.exists():
+            return []
+
+        try:
+            with open(staging_file) as f:
+                data = json.load(f)
+
+            # Check if stale
+            age = time.time() - data.get("timestamp", 0)
+            if age > ROLLOUT_STAGING_MAX_AGE:
+                logger.warning(
+                    "Stale staging file for worker %d window %d (%.0fs old)",
+                    worker_id, window, age,
+                )
+                return []
+
+            return data.get("rollouts", [])
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning("Failed to load staging file for worker %d: %s", worker_id, e)
+            return []
+
+    def is_worker_done(self, window: int, worker_id: int) -> bool:
+        """Check if a worker has completed staging for a window."""
+        done_file = self._get_done_file(window, worker_id)
+        return done_file.exists()
+
+    async def wait_for_workers(
+        self, window: int, timeout: float = 30.0, min_workers: int | None = None
+    ) -> int:
+        """
+        Leader waits for other workers to finish staging.
+
+        Args:
+            window: Window number to wait for
+            timeout: Max time to wait in seconds
+            min_workers: Minimum workers to wait for (default: total_workers - 1)
+
+        Returns:
+            Number of workers that completed staging
+        """
+        if not self.is_leader:
+            return 0
+
+        if min_workers is None:
+            min_workers = self.total_workers - 1
+
+        start_time = time.time()
+        poll_interval = 0.5
+
+        while True:
+            elapsed = time.time() - start_time
+            done_count = sum(
+                1 for wid in range(1, self.total_workers)
+                if self.is_worker_done(window, wid)
+            )
+
+            if done_count >= min_workers:
+                logger.info(
+                    "Leader: %d/%d workers completed staging for window %d (waited %.1fs)",
+                    done_count, self.total_workers - 1, window, elapsed,
+                )
+                return done_count
+
+            if elapsed > timeout:
+                logger.warning(
+                    "Leader: timeout waiting for workers, only %d/%d ready for window %d",
+                    done_count, self.total_workers - 1, window,
+                )
+                return done_count
+
+            await asyncio.sleep(poll_interval)
+
+    def aggregate_rollouts(self, window: int) -> list[dict]:
+        """
+        Leader aggregates rollouts from all workers.
+
+        Returns:
+            Combined list of rollouts from all workers
+        """
+        if not self.is_leader:
+            return []
+
+        all_rollouts = []
+        for wid in range(self.total_workers):
+            rollouts = self.load_rollouts(window, wid)
+            if rollouts:
+                all_rollouts.extend(rollouts)
+                logger.debug(
+                    "Aggregated %d rollouts from worker %d for window %d",
+                    len(rollouts), wid, window,
+                )
+
+        logger.info(
+            "Leader aggregated %d total rollouts from %d workers for window %d",
+            len(all_rollouts), self.total_workers, window,
+        )
+        return all_rollouts
+
+    def cleanup_window(self, window: int) -> None:
+        """Clean up staging files for a completed window."""
+        for wid in range(self.total_workers):
+            for file in [
+                self._get_staging_file(window, wid),
+                self._get_done_file(window, wid),
+            ]:
+                try:
+                    if file.exists():
+                        file.unlink()
+                except IOError:
+                    pass
