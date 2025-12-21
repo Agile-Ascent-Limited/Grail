@@ -26,7 +26,9 @@ from grail.infrastructure.checkpoint_consumer import (
     default_checkpoint_cache_root,
 )
 from grail.infrastructure.credentials import load_r2_credentials
+from grail.infrastructure.worker_barrier import WorkerBarrier
 from grail.infrastructure.worker_config import WorkerConfig, log_multi_gpu_setup
+from grail.shared.schemas import Bucket
 from grail.model.provider import clear_model_and_tokenizer, get_model, get_tokenizer
 from grail.monitoring import get_monitoring_manager
 from grail.monitoring.config import MonitoringConfig
@@ -142,7 +144,7 @@ class MinerNeuron(BaseNeuron):
             last_window_start = -1
             timers = MiningTimers()
 
-            # Load R2 credentials
+            # Load R2 credentials (all workers need this for upload)
             try:
                 credentials = load_r2_credentials()
                 logger.info("✅ Loaded R2 credentials")
@@ -154,32 +156,86 @@ class MinerNeuron(BaseNeuron):
             self.heartbeat()
             logger.info("✅ Initialized watchdog heartbeat")
 
-            # Get subtensor and metagraph for chain manager (use shared base method)
-            subtensor = await self.get_subtensor()
-            self.heartbeat()
+            # Create worker barrier for leader-follower synchronization
+            barrier = WorkerBarrier(
+                cache_root=default_checkpoint_cache_root(),
+                worker_id=worker_config.worker_id,
+                total_workers=worker_config.total_workers,
+            )
+
             netuid = int(get_conf("BT_NETUID", get_conf("NETUID", 200)))
-            metagraph = await subtensor.metagraph(netuid)
-            self.heartbeat()
+            chain_manager = None  # Only leader initializes this
 
-            # Initialize chain manager for credential commitments
-            config = SimpleNamespace(netuid=netuid)
-            chain_manager = GrailChainManager(config, wallet, metagraph, subtensor, credentials)
-            await chain_manager.initialize()
-            logger.info("✅ Initialized chain manager and committed read credentials")
-            # Ensure background chain worker stops on shutdown
-            self.register_shutdown_callback(chain_manager.stop)
-            self.heartbeat()
+            if barrier.is_leader:
+                # LEADER (worker 0): Do blockchain initialization
+                logger.info("🎯 Worker 0 is LEADER - initializing blockchain connections...")
 
-            # Use trainer UID's committed read credentials for checkpoints
-            trainer_bucket = chain_manager.get_bucket(TRAINER_UID)
-            if trainer_bucket is not None:
-                logger.info(f"✅ Using trainer UID {TRAINER_UID} bucket for checkpoints")
-                checkpoint_credentials = trainer_bucket
+                # Get subtensor and metagraph for chain manager
+                subtensor = await self.get_subtensor()
+                self.heartbeat()
+                metagraph = await subtensor.metagraph(netuid)
+                self.heartbeat()
+
+                # Initialize chain manager for credential commitments
+                config = SimpleNamespace(netuid=netuid)
+                chain_manager = GrailChainManager(config, wallet, metagraph, subtensor, credentials)
+                await chain_manager.initialize()
+                logger.info("✅ Initialized chain manager and committed read credentials")
+                # Ensure background chain worker stops on shutdown
+                self.register_shutdown_callback(chain_manager.stop)
+                self.heartbeat()
+
+                # Use trainer UID's committed read credentials for checkpoints
+                trainer_bucket = chain_manager.get_bucket(TRAINER_UID)
+                if trainer_bucket is not None:
+                    logger.info(f"✅ Using trainer UID {TRAINER_UID} bucket for checkpoints")
+                    checkpoint_credentials = trainer_bucket
+                else:
+                    logger.warning(
+                        f"⚠️ Trainer UID {TRAINER_UID} bucket not found, using local credentials"
+                    )
+                    checkpoint_credentials = credentials
+                    trainer_bucket = None
+
+                # Signal ready to followers with shared data
+                barrier.signal_ready({
+                    "trainer_bucket": trainer_bucket.model_dump() if trainer_bucket else None,
+                    "netuid": netuid,
+                })
+                # Register cleanup on shutdown
+                self.register_shutdown_callback(barrier.cleanup)
+                logger.info("✅ Leader signaled ready to followers")
+
             else:
-                logger.warning(
-                    f"⚠️ Trainer UID {TRAINER_UID} bucket not found, using local credentials"
+                # FOLLOWER (workers 1-7): Wait for leader, skip blockchain init
+                logger.info(
+                    "⏳ Worker %d is FOLLOWER - waiting for leader...",
+                    worker_config.worker_id,
                 )
-                checkpoint_credentials = credentials
+
+                try:
+                    shared_data = await barrier.wait_for_leader(timeout=300)
+                    logger.info("✅ Received leader signal, proceeding with mining")
+                except TimeoutError:
+                    logger.error(
+                        "❌ Timed out waiting for leader (worker 0). "
+                        "Ensure worker 0 is running and healthy."
+                    )
+                    raise
+
+                # Reconstruct trainer_bucket from shared data
+                trainer_bucket_data = shared_data.get("trainer_bucket")
+                if trainer_bucket_data:
+                    trainer_bucket = Bucket.model_validate(trainer_bucket_data)
+                    checkpoint_credentials = trainer_bucket
+                    logger.info(f"✅ Using trainer bucket from leader for checkpoints")
+                else:
+                    logger.warning("⚠️ No trainer bucket from leader, using local credentials")
+                    checkpoint_credentials = credentials
+
+                # Followers still need subtensor for block checks in mining loop
+                subtensor = await self.get_subtensor()
+                self.heartbeat()
 
             checkpoint_manager = CheckpointManager(
                 cache_root=default_checkpoint_cache_root(),
@@ -187,21 +243,22 @@ class MinerNeuron(BaseNeuron):
                 keep_limit=2,  # Keep only current + previous window
             )
 
-            # Initialize monitoring for mining operations
+            # Initialize monitoring for mining operations (all workers)
             monitor = get_monitoring_manager()
             if monitor:
                 mining_config = MonitoringConfig.for_mining(wallet.name)
-                try:
-                    subtensor_for_uid = await self.get_subtensor()
-                    self.heartbeat()
-                except Exception:
-                    subtensor_for_uid = None
                 uid = None
-                if subtensor_for_uid is not None:
-                    uid = await get_own_uid_on_subnet(
-                        subtensor_for_uid, netuid, wallet.hotkey.ss58_address
-                    )
-                    self.heartbeat()
+                if barrier.is_leader:
+                    # Leader can look up UID from metagraph
+                    try:
+                        subtensor_for_uid = await self.get_subtensor()
+                        self.heartbeat()
+                        uid = await get_own_uid_on_subnet(
+                            subtensor_for_uid, netuid, wallet.hotkey.ss58_address
+                        )
+                        self.heartbeat()
+                    except Exception:
+                        pass
                 run_name = f"miner-{uid}" if uid is not None else f"mining_{wallet.name}"
                 run_id = await monitor.start_run(run_name, mining_config.get("hyperparameters", {}))
                 self.heartbeat()
