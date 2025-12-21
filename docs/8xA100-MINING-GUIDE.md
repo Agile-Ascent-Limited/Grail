@@ -220,7 +220,7 @@ GRAIL_MONITORING_BACKEND=wandb
 Create `ecosystem.config.js` in the grail directory:
 
 ```javascript
-// ecosystem.config.js - PM2 configuration for 8x A100 mining
+// ecosystem.config.js - PM2 configuration for 8x A100 mining with vLLM
 module.exports = {
   apps: [
     // Worker 0 - GPU 0
@@ -228,12 +228,14 @@ module.exports = {
       name: 'grail-miner-0',
       script: '.venv/bin/grail',
       args: 'mine',
+      interpreter: 'none',  // Use script's shebang (required for Python entry point)
       cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '0',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '0',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
       max_memory_restart: '80G',
@@ -247,12 +249,14 @@ module.exports = {
       name: 'grail-miner-1',
       script: '.venv/bin/grail',
       args: 'mine',
+      interpreter: 'none',
       cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '1',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '1',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
       max_memory_restart: '80G',
@@ -266,12 +270,14 @@ module.exports = {
       name: 'grail-miner-2',
       script: '.venv/bin/grail',
       args: 'mine',
+      interpreter: 'none',
       cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '2',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '2',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
       max_memory_restart: '80G',
@@ -285,12 +291,14 @@ module.exports = {
       name: 'grail-miner-3',
       script: '.venv/bin/grail',
       args: 'mine',
+      interpreter: 'none',
       cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '3',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '3',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
       max_memory_restart: '80G',
@@ -304,12 +312,14 @@ module.exports = {
       name: 'grail-miner-4',
       script: '.venv/bin/grail',
       args: 'mine',
+      interpreter: 'none',
       cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '4',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '4',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
       max_memory_restart: '80G',
@@ -323,12 +333,14 @@ module.exports = {
       name: 'grail-miner-5',
       script: '.venv/bin/grail',
       args: 'mine',
+      interpreter: 'none',
       cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '5',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '5',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
       max_memory_restart: '80G',
@@ -342,12 +354,14 @@ module.exports = {
       name: 'grail-miner-6',
       script: '.venv/bin/grail',
       args: 'mine',
+      interpreter: 'none',
       cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '6',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '6',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
       max_memory_restart: '80G',
@@ -361,12 +375,14 @@ module.exports = {
       name: 'grail-miner-7',
       script: '.venv/bin/grail',
       args: 'mine',
+      interpreter: 'none',
       cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '7',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '7',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '8',
       },
       max_memory_restart: '80G',
@@ -378,6 +394,10 @@ module.exports = {
   ],
 };
 ```
+
+> **Note:** The `interpreter: 'none'` setting is required because `.venv/bin/grail` is a Python entry point script with a shebang. This tells PM2 to execute the script directly rather than trying to run it with Node.js.
+>
+> If not using vLLM, change `GRAIL_USE_VLLM: '0'` and `GRAIL_USE_FLASH_ATTENTION: '1'`.
 
 ---
 
@@ -466,24 +486,29 @@ Update `ecosystem.config.js`:
   name: 'grail-miner-0',
   script: '.venv/bin/grail',
   args: 'mine',
+  interpreter: 'none',
   cwd: '/root/Grail',
   env: {
     GRAIL_WORKER_ID: '0',
     GRAIL_TOTAL_WORKERS: '4',
     CUDA_VISIBLE_DEVICES: '0,1',
     GRAIL_MULTI_GPU: '1',
-    GRAIL_USE_FLASH_ATTENTION: '1',
+    GRAIL_USE_VLLM: '1',
+    GRAIL_USE_FLASH_ATTENTION: '0',
     GRAIL_GENERATION_BATCH_SIZE: '4',
   },
   // ...
 },
 // Worker 1 - GPUs 2,3
 {
+  interpreter: 'none',
   env: {
     GRAIL_WORKER_ID: '1',
     GRAIL_TOTAL_WORKERS: '4',
     CUDA_VISIBLE_DEVICES: '2,3',
     GRAIL_MULTI_GPU: '1',
+    GRAIL_USE_VLLM: '1',
+    GRAIL_USE_FLASH_ATTENTION: '0',
     // ...
   },
 },
