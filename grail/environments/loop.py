@@ -17,6 +17,7 @@ import logging
 import os
 import random
 import time
+from pathlib import Path
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, cast
@@ -786,7 +787,14 @@ class AgentEnvLoop:
             logger.info("Using provided generation backend")
         elif use_vllm:
             # Use vLLM server backend for faster generation
-            model_name = getattr(model, "name_or_path", "model") if model else "model"
+            # Prefer env var (set by miner after server starts), else derive from model path
+            env_model_name = os.getenv("GRAIL_VLLM_MODEL_NAME")
+            if env_model_name:
+                model_name = env_model_name
+            else:
+                # Use basename only - vLLM serves as "checkpoint-XXXXX" not full path
+                raw_name = getattr(model, "name_or_path", "model") if model else "model"
+                model_name = Path(raw_name).name
             self._backend = VLLMServerBackend(
                 base_url=vllm_url,
                 model_name=model_name,
@@ -794,7 +802,7 @@ class AgentEnvLoop:
                 return_chosen_logprobs=True,
                 max_concurrent_requests=32,  # High concurrency for throughput
             )
-            logger.info(f"🚀 Using vLLM backend at {vllm_url} for generation")
+            logger.info(f"🚀 Using vLLM backend at {vllm_url} (model={model_name})")
         else:
             # Default: HuggingFace backend
             self._backend = HFBackend(model, tokenizer, self.device)

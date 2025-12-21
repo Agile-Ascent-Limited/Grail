@@ -309,11 +309,13 @@ class MinerNeuron(BaseNeuron):
                                                     worker_config.worker_id,
                                                 )
                                                 await vllm_server.start_server()
-                                                # Set URL for AgentEnvLoop to use
+                                                # Set URL and model name for AgentEnvLoop to use
                                                 os.environ["GRAIL_VLLM_URL"] = vllm_server.base_url
+                                                os.environ["GRAIL_VLLM_MODEL_NAME"] = vllm_server.model_name
                                                 logger.info(
-                                                    "✅ vLLM server ready at %s",
+                                                    "✅ vLLM server ready at %s (model=%s)",
                                                     vllm_server.base_url,
+                                                    vllm_server.model_name,
                                                 )
                                                 # Register cleanup on shutdown
                                                 self.register_shutdown_callback(
@@ -329,9 +331,12 @@ class MinerNeuron(BaseNeuron):
                                                 await vllm_server.reload_with_new_checkpoint(
                                                     str(checkpoint_path)
                                                 )
+                                                # Update model name after reload
+                                                os.environ["GRAIL_VLLM_MODEL_NAME"] = vllm_server.model_name
                                                 logger.info(
-                                                    "✅ vLLM server reloaded at %s",
+                                                    "✅ vLLM server reloaded at %s (model=%s)",
                                                     vllm_server.base_url,
+                                                    vllm_server.model_name,
                                                 )
                                             except Exception as vllm_exc:
                                                 logger.error(
