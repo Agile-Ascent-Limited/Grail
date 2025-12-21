@@ -828,8 +828,9 @@ async def download_file_chunked(
                     response["Body"].close()
 
             # For large files, download in chunks
+            # Higher concurrency for fast networks (8x A100 setups typically have 10+ Gbps)
             chunks: list[bytes] = []
-            semaphore = asyncio.Semaphore(10 if chunk_size >= 200 * 1024 * 1024 else 30)
+            semaphore = asyncio.Semaphore(16 if chunk_size >= 200 * 1024 * 1024 else 40)
             tasks = []
 
             for start in range(0, total_size, chunk_size):

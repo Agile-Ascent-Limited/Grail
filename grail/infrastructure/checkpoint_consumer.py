@@ -617,7 +617,8 @@ class CheckpointManager:
         return None
 
     async def _download_files(self, metadata: CheckpointMetadata, tmp_dir: Path) -> None:
-        semaphore = asyncio.Semaphore(8)
+        # Higher concurrency for fast networks (8x A100 setups typically have 10+ Gbps)
+        semaphore = asyncio.Semaphore(16)
 
         async def _download(filename: str) -> None:
             async with semaphore:
@@ -649,27 +650,29 @@ class CheckpointManager:
         if not keys:
             raise CheckpointDownloadError(f"No files found at prefix {prefix_dir}")
 
-        asyncio.Semaphore(6)
+        # Higher concurrency for fast networks
+        semaphore = asyncio.Semaphore(16)
 
         async def _dl(key: str) -> None:
-            if not key or not key.startswith(prefix_dir) or key.endswith("/"):
-                return
-            rel = key[len(prefix_dir) :]
+            async with semaphore:
+                if not key or not key.startswith(prefix_dir) or key.endswith("/"):
+                    return
+                rel = key[len(prefix_dir) :]
 
-            # Strip .gz extension from filename since download_file_chunked auto-decompresses
-            # This ensures config.json.gz is saved as config.json (decompressed)
-            if rel.endswith(".gz"):
-                rel = rel[:-3]
-                logger.debug("Stripping .gz from filename: %s -> %s", key, rel)
+                # Strip .gz extension from filename since download_file_chunked auto-decompresses
+                # This ensures config.json.gz is saved as config.json (decompressed)
+                if rel.endswith(".gz"):
+                    rel = rel[:-3]
+                    logger.debug("Stripping .gz from filename: %s -> %s", key, rel)
 
-            data = await comms.download_file_chunked(
-                key, credentials=self.credentials, use_write=False
-            )
-            if data is None:
-                raise CheckpointDownloadError(f"Missing file {key}")
-            target_path = tmp_dir / rel
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_bytes(data)
+                data = await comms.download_file_chunked(
+                    key, credentials=self.credentials, use_write=False
+                )
+                if data is None:
+                    raise CheckpointDownloadError(f"Missing file {key}")
+                target_path = tmp_dir / rel
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                target_path.write_bytes(data)
 
         await asyncio.gather(*(_dl(k) for k in keys))
 
