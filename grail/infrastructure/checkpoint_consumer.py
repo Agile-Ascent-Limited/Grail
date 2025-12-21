@@ -129,6 +129,13 @@ class CheckpointManager:
         self._download_locks: dict[int, asyncio.Lock] = {}
         self._fallback_attempted: set[int] = set()
 
+        # Clean up stale locks from crashed workers on startup
+        # Use shorter timeout (60s) to quickly recover from crashes
+        if MULTI_WORKER_ENABLED:
+            removed = cleanup_stale_locks(self.cache_root, max_age_seconds=60.0)
+            if removed > 0:
+                logger.info("🧹 Cleaned up %d stale checkpoint locks on startup", removed)
+
     # ----------------------------- High-level API --------------------------- #
 
     async def get_checkpoint(self, window: int) -> Path | None:

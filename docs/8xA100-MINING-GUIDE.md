@@ -666,11 +666,20 @@ GRAIL_GENERATION_BATCH_SIZE=4  # or 2
 GRAIL_QUANTIZATION=int8
 ```
 
-**3. Workers Competing for Checkpoint Download**
+**3. Workers Stuck Waiting for Checkpoint Download**
+
+If workers log "waiting for checkpoint (another worker downloading)" indefinitely:
+
+```bash
+# Check for stale lock files
+ls -la ~/.cache/grail/checkpoints/.locks/
+
+# If you see a .lock file without a matching .complete file, remove it
+rm ~/.cache/grail/checkpoints/.locks/checkpoint-*.lock
+pm2 restart all
 ```
-# This is handled automatically - workers coordinate via file locks
-# Only one worker downloads, others wait
-```
+
+> **Note:** As of the latest version, stale locks (>60s old) are automatically cleaned up on worker startup. If you still see this issue, update to the latest code.
 
 **4. Slow Upload Speed**
 ```bash
