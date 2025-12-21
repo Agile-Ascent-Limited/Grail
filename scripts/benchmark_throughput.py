@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import logging
 import os
 import sys
@@ -134,10 +135,12 @@ def run_benchmark(
         def _env_factory():
             return create_env()
 
+        # Generate valid hex randomness for warmup
+        warmup_hex = hashlib.sha256(b"warmup_randomness_12345").hexdigest()
         _ = loop.run_grpo_group(
             _env_factory,
             ROLLOUTS_PER_PROBLEM,
-            "warmup_randomness_12345",
+            warmup_hex,
             wallet=None,  # No signing needed for benchmark
             batch_size=min(batch_size, ROLLOUTS_PER_PROBLEM),
             seed=seed,
@@ -161,10 +164,12 @@ def run_benchmark(
             def _env_factory():
                 return create_env()
 
+            # Generate valid hex randomness for this problem
+            problem_hex = hashlib.sha256(f"benchmark_randomness_{problem_idx}".encode()).hexdigest()
             rollouts = loop.run_grpo_group(
                 _env_factory,
                 ROLLOUTS_PER_PROBLEM,
-                f"benchmark_randomness_{problem_idx}",
+                problem_hex,
                 wallet=None,
                 batch_size=min(batch_size, ROLLOUTS_PER_PROBLEM),
                 seed=seed + problem_idx,

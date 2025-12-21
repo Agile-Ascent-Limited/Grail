@@ -31,24 +31,40 @@ sudo apt-get install -y nodejs
 npm install -g pm2
 ```
 
-### 2. Install Python Dependencies
+### 2. Install uv (Python Package Manager)
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc  # or restart terminal
+```
+
+### 3. Install Python Dependencies
 
 Follow the official installation from [docs/miner.md](miner.md):
 
 ```bash
 cd /path/to/grail
 
-# Create venv and install (uses lockfile for reproducibility)
-uv venv && source .venv/bin/activate
+# Create venv with Python 3.10 (required by grail) and install
+uv venv --python 3.10 && source .venv/bin/activate
 uv sync
 
-# Install performance packages for A100
-pip install flash-attn --no-build-isolation  # Flash Attention 2 (~30% faster)
-pip install orjson                            # Fast JSON (3-5x faster)
-pip install bitsandbytes                      # Quantization (optional, for 30B+ models)
+# Install orjson for faster JSON (3-5x faster)
+uv pip install orjson
+
+# Install Flash Attention 2 (~30% faster) - builds from source, takes 10-15 min
+uv pip install flash-attn --no-build-isolation
+
+# Verify flash-attn installed
+python -c "import flash_attn; print(flash_attn.__version__)"
 ```
 
-### 3. Register Your Miner (if not already done)
+**Notes:**
+- Flash Attention builds from source and takes 10-15 minutes - be patient
+- If flash-attn fails, mining still works without it (just ~30% slower)
+- Do NOT install bitsandbytes - it breaks torch version compatibility
+
+### 4. Register Your Miner (if not already done)
 
 ```bash
 # Register on subnet 81
@@ -427,12 +443,14 @@ curl -o /dev/null -w "%{speed_upload}\n" --data-binary @/path/to/testfile https:
 
 **4. Flash Attention Not Working**
 ```bash
-# Reinstall with CUDA
-pip uninstall flash-attn
-pip install flash-attn --no-build-isolation
+# Reinstall - builds from source (takes 10-15 min)
+uv pip uninstall flash-attn
+uv pip install flash-attn --no-build-isolation
 
 # Verify installation
 python -c "import flash_attn; print(flash_attn.__version__)"
+
+# If it still fails, skip it - mining works without flash-attn (just slower)
 ```
 
 ### Health Check Script
@@ -498,25 +516,28 @@ With the superlinear scoring formula `score = unique_rollouts^4.0`:
 ## Quick Start Summary
 
 ```bash
-# 1. Setup (uses official uv method)
-cd /path/to/grail
-uv venv && source .venv/bin/activate
-uv sync
-pip install flash-attn --no-build-isolation
-pip install orjson
+# 1. Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.bashrc
 
-# 2. Configure
+# 2. Setup
+cd /path/to/grail
+uv venv --python 3.10 && source .venv/bin/activate
+uv sync
+uv pip install orjson
+uv pip install flash-attn --no-build-isolation  # Takes 10-15 min, optional
+
+# 3. Configure
 cp .env.example .env
 nano .env  # Edit with your wallet, R2 credentials, etc.
 
-# 3. Create ecosystem.config.js (copy from above, update paths)
+# 4. Create ecosystem.config.js (copy from above, update paths)
 
-# 4. Start (as root)
+# 5. Start
 mkdir -p /var/log/grail /var/cache/grail
 pm2 start ecosystem.config.js
 pm2 save
 
-# 5. Monitor
+# 6. Monitor
 pm2 logs
 watch -n 1 nvidia-smi
 ```

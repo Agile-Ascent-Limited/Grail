@@ -13,6 +13,9 @@ python scripts/benchmark_throughput.py
 
 # Test with 8 workers projection (for 8x A100)
 python scripts/benchmark_throughput.py --workers 8 --num-problems 20
+
+# Recommended: 8x A100 with Flash Attention (full test)
+GRAIL_USE_FLASH_ATTENTION=1 python scripts/benchmark_throughput.py --num-problems 10 --workers 8
 ```
 
 ## What It Measures
@@ -174,13 +177,13 @@ python scripts/benchmark_throughput.py --batch-sizes 1,2
 
 1. Enable Flash Attention:
    ```bash
-   pip install flash-attn --no-build-isolation
+   uv pip install flash-attn --no-build-isolation  # Takes 10-15 min to build
    GRAIL_USE_FLASH_ATTENTION=1 python scripts/benchmark_throughput.py
    ```
 
 2. Install orjson:
    ```bash
-   pip install orjson
+   uv pip install orjson
    ```
 
 ### Model Download Slow
