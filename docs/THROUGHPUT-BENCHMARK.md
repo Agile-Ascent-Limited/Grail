@@ -14,7 +14,7 @@ Test your mining throughput **without connecting to Bittensor network**. This he
 ## Quick Start
 
 ```bash
-cd /path/to/grail
+cd /root/Grail
 source .venv/bin/activate
 
 # Basic benchmark (single GPU, default model)

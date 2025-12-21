@@ -53,7 +53,7 @@ source ~/.bashrc  # or restart terminal
 Follow the official installation from [docs/miner.md](miner.md):
 
 ```bash
-cd /path/to/grail
+cd /root/Grail
 
 # Create venv with Python 3.10 (required by grail) and install
 uv venv --python 3.10 && source .venv/bin/activate
@@ -91,7 +91,7 @@ tools/vllm-server/.venv/bin/python -c "import vllm; print(vllm.__version__)"
 
 After setup, add to your `.env`:
 ```bash
-GRAIL_VLLM_PYTHON=/path/to/grail/tools/vllm-server/.venv/bin/python
+GRAIL_VLLM_PYTHON=/root/Grail/tools/vllm-server/.venv/bin/python
 ```
 
 **Performance comparison:**
@@ -228,7 +228,7 @@ module.exports = {
       name: 'grail-miner-0',
       script: '.venv/bin/grail',
       args: 'mine',
-      cwd: '/path/to/grail',
+      cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '0',
         GRAIL_TOTAL_WORKERS: '8',
@@ -247,7 +247,7 @@ module.exports = {
       name: 'grail-miner-1',
       script: '.venv/bin/grail',
       args: 'mine',
-      cwd: '/path/to/grail',
+      cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '1',
         GRAIL_TOTAL_WORKERS: '8',
@@ -266,7 +266,7 @@ module.exports = {
       name: 'grail-miner-2',
       script: '.venv/bin/grail',
       args: 'mine',
-      cwd: '/path/to/grail',
+      cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '2',
         GRAIL_TOTAL_WORKERS: '8',
@@ -285,7 +285,7 @@ module.exports = {
       name: 'grail-miner-3',
       script: '.venv/bin/grail',
       args: 'mine',
-      cwd: '/path/to/grail',
+      cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '3',
         GRAIL_TOTAL_WORKERS: '8',
@@ -304,7 +304,7 @@ module.exports = {
       name: 'grail-miner-4',
       script: '.venv/bin/grail',
       args: 'mine',
-      cwd: '/path/to/grail',
+      cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '4',
         GRAIL_TOTAL_WORKERS: '8',
@@ -323,7 +323,7 @@ module.exports = {
       name: 'grail-miner-5',
       script: '.venv/bin/grail',
       args: 'mine',
-      cwd: '/path/to/grail',
+      cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '5',
         GRAIL_TOTAL_WORKERS: '8',
@@ -342,7 +342,7 @@ module.exports = {
       name: 'grail-miner-6',
       script: '.venv/bin/grail',
       args: 'mine',
-      cwd: '/path/to/grail',
+      cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '6',
         GRAIL_TOTAL_WORKERS: '8',
@@ -361,7 +361,7 @@ module.exports = {
       name: 'grail-miner-7',
       script: '.venv/bin/grail',
       args: 'mine',
-      cwd: '/path/to/grail',
+      cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '7',
         GRAIL_TOTAL_WORKERS: '8',
@@ -391,7 +391,7 @@ mkdir -p /var/log/grail
 mkdir -p /var/cache/grail   # Use fast NVMe path if available, e.g., /nvme/grail-cache
 
 # Start all 8 workers
-cd /path/to/grail
+cd /root/Grail
 pm2 start ecosystem.config.js
 
 # Save PM2 configuration (auto-restart on reboot)
@@ -466,7 +466,7 @@ Update `ecosystem.config.js`:
   name: 'grail-miner-0',
   script: '.venv/bin/grail',
   args: 'mine',
-  cwd: '/path/to/grail',
+  cwd: '/root/Grail',
   env: {
     GRAIL_WORKER_ID: '0',
     GRAIL_TOTAL_WORKERS: '4',
