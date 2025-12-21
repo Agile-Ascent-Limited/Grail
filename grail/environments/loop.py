@@ -283,8 +283,6 @@ class VLLMServerBackend:
         return_chosen_logprobs: bool = False,
         warn_on_missing_token_ids: bool = True,
     ) -> None:
-        from openai import AsyncOpenAI
-
         self._base_url = base_url.rstrip("/")
         self._model_name = model_name
         self._tokenizer = tokenizer
@@ -293,6 +291,46 @@ class VLLMServerBackend:
         self._return_chosen_logprobs = bool(return_chosen_logprobs)
         self._warn_on_missing_token_ids = bool(warn_on_missing_token_ids)
 
+        # Client is created lazily to handle event loop changes
+        self._client = None
+        self._client_lock = None  # Will be created per-event-loop
+
+    def _get_client(self):
+        """Get or create AsyncOpenAI client for current event loop.
+
+        The client is created lazily and recreated if the event loop has changed.
+        This handles window transitions where the vLLM server reloads and the
+        event loop may be closed/recreated.
+        """
+        import asyncio
+
+        from openai import AsyncOpenAI
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop - will be created when needed
+            loop = None
+
+        # Check if we need to create/recreate the client
+        if self._client is None:
+            self._client = AsyncOpenAI(
+                base_url=f"{self._base_url}/v1",
+                api_key="EMPTY",
+                timeout=self._timeout,
+            )
+            logger.debug("Created new AsyncOpenAI client for vLLM backend")
+
+        return self._client
+
+    def _recreate_client(self):
+        """Force recreation of the AsyncOpenAI client.
+
+        Called when we detect the event loop has been closed/changed.
+        """
+        from openai import AsyncOpenAI
+
+        logger.warning("Recreating AsyncOpenAI client due to event loop change")
         self._client = AsyncOpenAI(
             base_url=f"{self._base_url}/v1",
             api_key="EMPTY",
@@ -374,7 +412,9 @@ class VLLMServerBackend:
                             # Request logprobs. We only store chosen-token logprobs; top alternatives are ignored.
                             completion_kwargs["logprobs"] = 1
 
-                        response = await self._client.completions.create(**completion_kwargs)
+                        # Get client (lazy creation handles event loop changes)
+                        client = self._get_client()
+                        response = await client.completions.create(**completion_kwargs)
                         text = response.choices[0].text if response.choices else ""
                         chosen_logprobs: list[float] | None = None
                         chosen_token_ids: list[int] | None = None
@@ -414,6 +454,20 @@ class VLLMServerBackend:
                             chosen_token_ids = None
                         _ = time.time() - req_start
                         return (idx, text, chosen_logprobs, chosen_token_ids)
+                    except RuntimeError as e:
+                        # Handle event loop closure (happens during window transitions)
+                        if "Event loop is closed" in str(e):
+                            logger.warning(
+                                "  vLLMServer req %d: Event loop closed, recreating client...",
+                                idx + 1,
+                            )
+                            self._recreate_client()
+                            # Don't count this as a retry attempt - just recreate and try again
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(0.5)
+                                continue
+                        # Other RuntimeErrors fall through to general handler
+                        raise
                     except Exception as e:
                         if attempt < max_retries - 1:
                             backoff = base_backoff * (2**attempt)
