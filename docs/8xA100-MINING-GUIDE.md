@@ -77,6 +77,33 @@ python -c "import flash_attn; print(flash_attn.__version__)"
 - If flash-attn fails, mining still works without it (just ~30% slower)
 - Do NOT install bitsandbytes - it breaks torch version compatibility
 
+### 4b. Optional: vLLM Backend (5-10x faster inference)
+
+vLLM provides significantly faster inference but requires an isolated environment due to dependency conflicts with bittensor.
+
+```bash
+# Run the setup script (creates isolated env at tools/vllm-server/.venv/)
+bash scripts/setup_vllm_env.sh
+
+# Verify installation
+tools/vllm-server/.venv/bin/python -c "import vllm; print(vllm.__version__)"
+```
+
+After setup, add to your `.env`:
+```bash
+GRAIL_VLLM_PYTHON=/path/to/grail/tools/vllm-server/.venv/bin/python
+```
+
+**Performance comparison:**
+
+| Backend | Throughput | Setup Complexity |
+|---------|-----------|------------------|
+| HuggingFace | 1x (baseline) | None |
+| Flash Attention | ~1.3x | Medium (build from source) |
+| vLLM | 5-10x | Easy (isolated env) |
+
+**Note:** vLLM includes flash-attn built-in, so you don't need to build flash-attn separately if using vLLM.
+
 ### 5. Wallet Setup
 
 **Regenerate existing wallet from mnemonic (if migrating to new server):**
@@ -578,7 +605,12 @@ uv venv --python 3.10 && source .venv/bin/activate
 uv sync
 uv pip install bittensor-cli                     # Wallet management
 uv pip install orjson
-uv pip install flash-attn --no-build-isolation   # Takes 10-15 min, optional
+
+# 2b. Choose ONE performance option:
+# Option A: vLLM (recommended, 5-10x faster, easier setup)
+bash scripts/setup_vllm_env.sh
+# Option B: Flash Attention (1.3x faster, slow build)
+# uv pip install flash-attn --no-build-isolation   # Takes 10-15 min
 
 # 3. Setup wallet (if new server)
 btcli w regen_coldkey --wallet-name YOUR_WALLET --wallet_path "~/.bittensor/wallets/" --mnemonic "your 12 words" --overwrite
