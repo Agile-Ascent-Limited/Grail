@@ -245,20 +245,8 @@ class ResilientSubtensor:
         if method_name == "metagraph":
             timeout = timeout * 2
 
-        # Restart if connection idle for 60s+ (WebSocket likely stale)
-        last_call_timestamp = object.__getattribute__(self, "_last_call_timestamp")
-        idle_duration = time.time() - last_call_timestamp
-        if idle_duration > 60.0:
-            logger.warning(
-                "⏰ Connection idle for %.1fs, restarting for %s", idle_duration, method_name
-            )
-            try:
-                await self._restart_subtensor()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("⚠️ Restart failed (%s), doubling timeout", exc)
-                timeout *= 2
+        # Note: Removed proactive idle restart - it was blocking mining when vLLM
+        # reloads took 2-3 minutes. The circuit breaker handles actual failures.
 
         # Retry loop
         for retry in range(retries):
