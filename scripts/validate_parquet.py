@@ -119,9 +119,14 @@ def validate_rollout(
 
     # Check 1: Prompt length match
     if len(expected_prompt) != prompt_length:
+        # Decode first 100 tokens of each for debugging
+        expected_text = tokenizer.decode(expected_prompt[:100], skip_special_tokens=False)
+        actual_text = tokenizer.decode(actual_prompt[:100], skip_special_tokens=False) if actual_prompt else "(empty)"
         return False, (
             f"Prompt length mismatch: expected={len(expected_prompt)}, "
-            f"actual={prompt_length} (file_pos={file_position}, rollout_group={rollout_group}, seed={validator_seed})"
+            f"actual={prompt_length} (file_pos={file_position}, rollout_group={rollout_group}, seed={validator_seed})\n"
+            f"      Expected starts: {expected_text[:200]!r}...\n"
+            f"      Actual starts:   {actual_text[:200]!r}..."
         )
 
     # Check 2: Prompt tokens match exactly
