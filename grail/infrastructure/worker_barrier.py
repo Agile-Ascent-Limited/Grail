@@ -663,7 +663,8 @@ class RolloutStaging:
         Leader aggregates rollouts from all workers.
 
         Returns:
-            Combined list of rollouts from all workers
+            Combined list of rollouts from all workers, sorted by problem_index
+            to ensure file position matches validator's group_index expectation.
         """
         if not self.is_leader:
             return []
@@ -678,8 +679,35 @@ class RolloutStaging:
                     len(rollouts), wid, window,
                 )
 
+        # CRITICAL: Sort by problem_index (rollout_group) to match validator expectations.
+        # Validator uses file position as group_index for seed derivation.
+        # Without sorting, rollouts would be in worker order (W0, W1, W2...) instead of
+        # problem order (P0, P1, P2...), causing env_prompt_valid check failures.
+        all_rollouts.sort(key=lambda r: r.get("rollout_group", 0))
+
+        # Detect gaps in problem sequence (validator requires contiguous problem indices)
+        if all_rollouts:
+            problem_indices = sorted(set(r.get("rollout_group", 0) for r in all_rollouts))
+            expected = list(range(problem_indices[0], problem_indices[-1] + 1))
+            missing = set(expected) - set(problem_indices)
+            if missing:
+                logger.warning(
+                    "⚠️ GAP DETECTED: Missing problem indices %s (have %d problems, expected %d). "
+                    "This may cause validation failures!",
+                    sorted(missing)[:10],  # Show first 10 missing
+                    len(problem_indices),
+                    len(expected),
+                )
+            else:
+                logger.info(
+                    "✅ No gaps: %d contiguous problems [%d-%d]",
+                    len(problem_indices),
+                    problem_indices[0],
+                    problem_indices[-1],
+                )
+
         logger.info(
-            "Leader aggregated %d total rollouts from %d workers for window %d",
+            "Leader aggregated %d total rollouts from %d workers for window %d (sorted by problem_index)",
             len(all_rollouts), self.total_workers, window,
         )
         return all_rollouts
