@@ -377,24 +377,34 @@ class MinerNeuron(BaseNeuron):
                                         eval_mode=True,
                                         checkpoint_window=checkpoint_window,
                                     )
-                                    # Load tokenizer with GRAIL's custom chat template
-                                    # This ensures miner uses the same template as trainer/validator
-                                    from grail.shared.chat_templates import build_qwen_chat_template
-                                    from grail.shared.prompt_constants import SYSTEM_PROMPT
+                                    # Load tokenizer and apply chat template from checkpoint
+                                    # (same approach as trainer - use chat_template.jinja if present)
+                                    tokenizer = get_tokenizer(str(checkpoint_path))
 
-                                    grail_chat_template = build_qwen_chat_template(SYSTEM_PROMPT)
-                                    tokenizer = get_tokenizer(
-                                        str(checkpoint_path),
-                                        chat_template=grail_chat_template,
+                                    # Load chat template from checkpoint's .jinja file
+                                    chat_template_path = checkpoint_path / "chat_template.jinja"
+                                    logger.info(
+                                        "[miner] Looking for chat_template.jinja at: %s",
+                                        chat_template_path,
                                     )
+                                    if not chat_template_path.is_file():
+                                        raise FileNotFoundError(
+                                            f"chat_template.jinja not found in {checkpoint_path}. "
+                                            "Checkpoint may be corrupted - try deleting and re-downloading."
+                                        )
+                                    chat_template_content = chat_template_path.read_text()
+                                    tokenizer.chat_template = chat_template_content
+                                    # Log template details for debugging
+                                    template_preview = chat_template_content[:100].replace("\n", "\\n")
+                                    logger.info(
+                                        "[miner] ✅ Loaded chat_template.jinja from: %s (size=%d bytes, preview: %s...)",
+                                        chat_template_path,
+                                        len(chat_template_content),
+                                        template_preview,
+                                    )
+
                                     current_checkpoint_window = checkpoint_window
                                     checkpoint_changed_this_window = True
-
-                                    # Log tokenizer info for debugging prompt length mismatches
-                                    logger.info(
-                                        "[miner] ✅ Tokenizer loaded with GRAIL chat template "
-                                        "(fixes prompt length mismatch issue)"
-                                    )
 
                                     # Leader updates barrier so followers know checkpoint is ready
                                     if barrier.is_leader:
