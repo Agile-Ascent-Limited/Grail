@@ -482,8 +482,15 @@ class MinerNeuron(BaseNeuron):
                         # Multi-worker aggregation: all workers stage locally,
                         # only leader aggregates and uploads to R2
                         if rollout_staging is not None:
-                            # Save to local staging
-                            rollout_staging.save_rollouts(window_start, inferences)
+                            # Check if window was already uploaded (late worker scenario)
+                            if rollout_staging.is_window_uploaded(window_start):
+                                logger.warning(
+                                    f"⚠️ Window {window_start} already uploaded, "
+                                    f"discarding {len(inferences)} late rollouts"
+                                )
+                            else:
+                                # Save to local staging
+                                rollout_staging.save_rollouts(window_start, inferences)
 
                             if barrier.is_leader:
                                 # Leader: wait for other workers, aggregate, upload
@@ -518,6 +525,8 @@ class MinerNeuron(BaseNeuron):
                                         if monitor:
                                             await monitor.log_counter("mining/successful_uploads")
                                             await monitor.log_gauge("mining/uploaded_rollouts", len(all_inferences))
+                                        # Mark window as uploaded so late workers skip staging
+                                        rollout_staging.mark_window_uploaded(window_start)
                                     except Exception as e:
                                         logger.error(f"❌ Failed to upload window {window_start}: {e}")
                                         logger.error(traceback.format_exc())
@@ -563,6 +572,9 @@ class MinerNeuron(BaseNeuron):
                                 if monitor:
                                     await monitor.log_counter("mining/successful_uploads")
                                     await monitor.log_gauge("mining/uploaded_rollouts", len(inferences))
+                                # Mark window as uploaded (single-worker mode)
+                                if rollout_staging:
+                                    rollout_staging.mark_window_uploaded(window_start)
 
                             except Exception as e:
                                 logger.error(f"❌ Failed to upload window {window_start}: {e}")

@@ -459,6 +459,23 @@ class RolloutStaging:
         )
         return all_rollouts
 
+    def _get_uploaded_file(self, window: int) -> Path:
+        """Get path for the window uploaded marker file."""
+        return self.staging_dir / f"window-{window}.uploaded"
+
+    def mark_window_uploaded(self, window: int) -> None:
+        """Leader marks window as uploaded so late workers skip staging."""
+        if not self.is_leader:
+            return
+        uploaded_file = self._get_uploaded_file(window)
+        with open(uploaded_file, "w") as f:
+            f.write(str(time.time()))
+        logger.debug("Marked window %d as uploaded", window)
+
+    def is_window_uploaded(self, window: int) -> bool:
+        """Check if a window has already been uploaded."""
+        return self._get_uploaded_file(window).exists()
+
     def cleanup_window(self, window: int) -> None:
         """Clean up staging files for a completed window."""
         for wid in range(self.total_workers):
@@ -471,3 +488,10 @@ class RolloutStaging:
                         file.unlink()
                 except IOError:
                     pass
+        # Also clean up uploaded marker
+        try:
+            uploaded_file = self._get_uploaded_file(window)
+            if uploaded_file.exists():
+                uploaded_file.unlink()
+        except IOError:
+            pass

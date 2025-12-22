@@ -189,10 +189,12 @@ class CheckpointLock:
         checkpoint_dir = self.cache_root / f"checkpoint-{self.window}"
 
         while time.time() - start_time < timeout:
-            # Check if download completed
-            if self._complete_file.exists() or (
-                checkpoint_dir.exists() and self._is_checkpoint_valid(checkpoint_dir)
-            ):
+            # Check if download completed - ONLY trust .complete file when waiting.
+            # We don't check checkpoint validity here because for sharded models,
+            # seeing config.json + one .safetensors file doesn't mean all shards
+            # are downloaded. The .complete file is written atomically AFTER all
+            # files are verified.
+            if self._complete_file.exists():
                 elapsed = time.time() - start_time
                 logger.info(
                     "Checkpoint %s ready after %.1fs wait (worker %s)",
