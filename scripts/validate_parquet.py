@@ -73,8 +73,8 @@ def get_prompt_for_seed(seed: int, tokenizer) -> list[int]:
 
     Uses the same environment adapter as the validator.
     """
+    from grail.environments.registry import get_adapter
     from grail.shared.constants import CURRENT_ENV_ID
-    from grail.validation.env_registry import get_adapter
 
     adapter = get_adapter(CURRENT_ENV_ID)
     return adapter.build_prompt_ids(seed, tokenizer)
