@@ -151,6 +151,7 @@ def validate_parquet_file(
     window_hash: str | None = None,
     verbose: bool = False,
     show_failures: int = 0,
+    model_name: str | None = None,
 ) -> tuple[int, int, list[str]]:
     """
     Validate all rollouts in a parquet file.
@@ -160,13 +161,12 @@ def validate_parquet_file(
         window_hash: Override window hash (otherwise fetched from chain)
         verbose: Print each rollout result
         show_failures: Number of failure details to show
+        model_name: Override model name for tokenizer (otherwise extracted from parquet)
 
     Returns:
         (valid_count, total_count, failure_messages)
     """
     from transformers import AutoTokenizer
-
-    from grail.shared.constants import MODEL_ID
 
     print(f"Loading parquet file: {filepath}")
     window_data = load_parquet_file(filepath)
@@ -178,6 +178,14 @@ def validate_parquet_file(
     print(f"  Hotkey: {hotkey}")
     print(f"  Window: {window_start}")
     print(f"  Rollouts: {len(inferences)}")
+
+    # Show model info from first rollout
+    parquet_model = ""
+    if inferences:
+        first_commit = inferences[0].get("commit", {})
+        model_info = first_commit.get("model", {})
+        parquet_model = model_info.get("name", "")
+        print(f"  Model in parquet: {parquet_model or '(not set)'}")
 
     # Get window hash from chain if not provided
     if not window_hash:
@@ -193,9 +201,19 @@ def validate_parquet_file(
             print("  Please provide --window-hash manually")
             return 0, len(inferences), [f"Missing window hash: {e}"]
 
+    # Determine model name for tokenizer
+    if not model_name:
+        # Try to use model name from parquet
+        model_name = parquet_model
+
+        # Fall back to default if not found
+        if not model_name:
+            model_name = "Qwen/Qwen3-4B-Instruct-2507"  # Current GRAIL default
+            print(f"  Warning: No model name in parquet, using default: {model_name}")
+
     # Load tokenizer
-    print(f"\nLoading tokenizer ({MODEL_ID})...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+    print(f"\nLoading tokenizer ({model_name})...")
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
     # Group rollouts by rollout_group to check ordering
     print("\nAnalyzing rollout ordering...")
@@ -299,6 +317,10 @@ def main():
         default=5,
         help="Number of failure details to show (default: 5)",
     )
+    parser.add_argument(
+        "--model-name",
+        help="Model name for tokenizer (otherwise extracted from parquet or defaults to Qwen3-4B-Instruct-2507)",
+    )
 
     args = parser.parse_args()
 
@@ -321,6 +343,7 @@ def main():
         window_hash=args.window_hash,
         verbose=args.verbose,
         show_failures=args.show_failures,
+        model_name=args.model_name,
     )
 
     # Summary
