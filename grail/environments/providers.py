@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from .core import TaskSource
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -251,14 +254,25 @@ class MATHTaskSource(TaskSource):
         cache_key = f"math_{self._split}"
         if cache_key in MATHTaskSource._cache:
             self._data = MATHTaskSource._cache[cache_key]
+            logger.info(
+                "[MATH] Using cached dataset: split=%s, samples=%d",
+                self._split,
+                len(self._data),
+            )
             return
 
         from datasets import load_dataset
+
+        logger.info(
+            "[MATH] Loading dataset from HuggingFace: EleutherAI/hendrycks_math (split=%s)",
+            self._split,
+        )
 
         if self._split == "test":
             # Load original test set directly
             all_samples: list[dict[str, Any]] = []
             for subset in _MATH_SUBSETS:
+                logger.debug("[MATH] Loading subset: %s", subset)
                 ds = load_dataset("EleutherAI/hendrycks_math", subset, split="test")
                 for sample in ds:
                     answer = _extract_boxed_answer(sample["solution"])
@@ -272,9 +286,11 @@ class MATHTaskSource(TaskSource):
                         }
                     )
             self._data = all_samples
+            logger.info("[MATH] Loaded test set: %d samples", len(self._data))
         else:
             # Load train split and create stratified train/val split
             self._load_train_val_split()
+            logger.info("[MATH] Loaded %s set: %d samples", self._split, len(self._data))
 
         # Cache for reuse
         MATHTaskSource._cache[cache_key] = self._data

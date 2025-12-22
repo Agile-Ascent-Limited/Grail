@@ -1077,7 +1077,14 @@ class AgentEnvLoop:
                     beacon=beacon,
                     proof_version=proof_version,
                 )
-                logger.debug("Prompt length: %d", rollout.prompt_length)
+                # Log prompt length in format matching validator logs for easy comparison
+                logger.info(
+                    "[MINER] prompt_length=%d, completion_length=%d, total_tokens=%d (seed=%s)",
+                    rollout.prompt_length,
+                    rollout.completion_length,
+                    len(all_ids),
+                    seed if seed is not None else "N/A",
+                )
                 rollouts.append(rollout)
 
         advantages = self._compute_advantages([r.reward for r in rollouts])
