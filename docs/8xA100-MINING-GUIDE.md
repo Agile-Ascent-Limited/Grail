@@ -249,15 +249,18 @@ GRAIL_MONITORING_BACKEND=wandb
 Create `ecosystem.config.js` in the grail directory:
 
 ```javascript
-// ecosystem.config.js - PM2 configuration for 8x A100 mining with vLLM
-// Each worker spawns its own vLLM server on port 30000 + worker_id
+// ecosystem.config.js - PM2 configuration for 8x A100 mining with vLLM backend
+// Each worker runs on its own GPU with vLLM (auto-spawned server)
 //
 // LEADER-FOLLOWER PATTERN:
-//   Worker 0 (leader) starts immediately and initializes blockchain/checkpoints.
-//   Workers 1-7 (followers) start after 30s delay to let leader init first.
-
-// Delay in seconds for follower workers (1-7) to let leader initialize first
-const FOLLOWER_DELAY_SECONDS = 30;
+//   Worker 0 (leader) initializes blockchain/checkpoints and signals ready via barrier file.
+//   Workers 1-7 (followers) wait for leader's barrier signal before mining (no PM2 delay needed).
+//
+// SETUP:
+//   1. pm2 start ecosystem.config.js      # Start miners with vLLM backend
+//
+// STOP:
+//   pm2 stop all
 
 module.exports = {
   apps: [
@@ -265,16 +268,17 @@ module.exports = {
     {
       name: 'grail-miner-0',
       script: '.venv/bin/grail',
-      args: 'mine',
-      interpreter: 'none',  // Use script's shebang (required for Python entry point)
+      args: '-vv mine',
+      interpreter: 'none',
       cwd: '/root/Grail',
       env: {
         GRAIL_WORKER_ID: '0',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '0',
-        GRAIL_USE_VLLM: '1',  // vLLM server auto-spawned, URL auto-set
+        GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '8',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive: 1 block = ~12s buffer
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -282,11 +286,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-0-out.log',
       merge_logs: true,
     },
-    // Worker 1 (FOLLOWER) - GPU 1, starts after delay
+    // Worker 1 (FOLLOWER) - GPU 1, waits for leader barrier
     {
       name: 'grail-miner-1',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -295,7 +299,8 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '1',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
-        GRAIL_GENERATION_BATCH_SIZE: '8',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -303,11 +308,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-1-out.log',
       merge_logs: true,
     },
-    // Worker 2 (FOLLOWER) - GPU 2, starts after delay
+    // Worker 2 (FOLLOWER) - GPU 2, waits for leader barrier
     {
       name: 'grail-miner-2',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -316,7 +321,8 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '2',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
-        GRAIL_GENERATION_BATCH_SIZE: '8',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -324,11 +330,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-2-out.log',
       merge_logs: true,
     },
-    // Worker 3 (FOLLOWER) - GPU 3, starts after delay
+    // Worker 3 (FOLLOWER) - GPU 3, waits for leader barrier
     {
       name: 'grail-miner-3',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -337,7 +343,8 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '3',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
-        GRAIL_GENERATION_BATCH_SIZE: '8',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -345,11 +352,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-3-out.log',
       merge_logs: true,
     },
-    // Worker 4 (FOLLOWER) - GPU 4, starts after delay
+    // Worker 4 (FOLLOWER) - GPU 4, waits for leader barrier
     {
       name: 'grail-miner-4',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -358,7 +365,8 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '4',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
-        GRAIL_GENERATION_BATCH_SIZE: '8',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -366,11 +374,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-4-out.log',
       merge_logs: true,
     },
-    // Worker 5 (FOLLOWER) - GPU 5, starts after delay
+    // Worker 5 (FOLLOWER) - GPU 5, waits for leader barrier
     {
       name: 'grail-miner-5',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -379,7 +387,8 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '5',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
-        GRAIL_GENERATION_BATCH_SIZE: '8',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -387,11 +396,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-5-out.log',
       merge_logs: true,
     },
-    // Worker 6 (FOLLOWER) - GPU 6, starts after delay
+    // Worker 6 (FOLLOWER) - GPU 6, waits for leader barrier
     {
       name: 'grail-miner-6',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -400,7 +409,8 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '6',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
-        GRAIL_GENERATION_BATCH_SIZE: '8',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -408,11 +418,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-6-out.log',
       merge_logs: true,
     },
-    // Worker 7 (FOLLOWER) - GPU 7, starts after delay
+    // Worker 7 (FOLLOWER) - GPU 7, waits for leader barrier
     {
       name: 'grail-miner-7',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -421,7 +431,8 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '7',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
-        GRAIL_GENERATION_BATCH_SIZE: '8',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -435,7 +446,7 @@ module.exports = {
 
 > **Note:** The `interpreter: 'none'` setting is required because `.venv/bin/grail` is a Python entry point script with a shebang. This tells PM2 to execute the script directly rather than trying to run it with Node.js.
 >
-> **Staggered Startup:** Workers 1-7 use `bash -c "sleep 30 && exec .venv/bin/grail mine"` to delay startup by 30 seconds. This ensures worker 0 (leader) has time to initialize blockchain and download checkpoints before followers start. Without this delay, all workers race to acquire checkpoint locks simultaneously.
+> **Barrier-based Synchronization:** Unlike older configurations that used `sleep` delays, all workers now start immediately. The leader-follower barrier mechanism handles synchronization automatically - followers wait for the leader's barrier file before proceeding to mine.
 >
 > If not using vLLM, change `GRAIL_USE_VLLM: '0'` and `GRAIL_USE_FLASH_ATTENTION: '1'`.
 
@@ -612,6 +623,41 @@ nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --for
 
 ## Performance Tuning
 
+### Safety Blocks Tuning
+
+The `GRAIL_MINER_SAFETY_BLOCKS` environment variable controls how many blocks before the deadline miners stop generating new rollouts. This is a critical tuning parameter:
+
+| Setting | Buffer Time | Use Case |
+|---------|-------------|----------|
+| 1 | ~12 seconds | **Aggressive (vLLM recommended)** - Maximum throughput |
+| 2 | ~24 seconds | Conservative - For slower backends or unstable networks |
+| 3+ | ~36+ seconds | Very conservative - Only if experiencing missed deadlines |
+
+**How it works:**
+
+1. The miner calculates `blocks_needed_for_next_gen` which estimates how many blocks are needed to complete the next generation batch plus upload time
+2. When `blocks_remaining <= blocks_needed_for_next_gen`, the miner stops generating and uploads
+3. The safety blocks value is added as buffer to this calculation
+
+**Recommended settings:**
+
+- **vLLM backend**: Set to `1` - vLLM is fast enough that you don't need extra buffer. This was tested to achieve 2400+ rollouts per window.
+- **HuggingFace backend**: Set to `2` or `3` - Slower inference means more buffer is safer
+- **Flash Attention backend**: Set to `2` - Middle ground
+
+**Symptoms of incorrect settings:**
+
+- **Safety blocks too high**: Uploading 60+ seconds before deadline (wasted mining time)
+- **Safety blocks too low**: Missing deadlines, incomplete uploads, or "duplicate nonce" errors
+
+**Monitoring upload timing:**
+
+Check your validator logs for upload timing:
+```
+Parquet file ... uploaded 15s before deadline  # Good - close to deadline
+Parquet file ... uploaded 69s before deadline  # Too early - reduce safety blocks
+```
+
 ### Recommended Settings by Model Size
 
 | Model Size | Workers | GPUs/Worker | GRAIL_MULTI_GPU | GRAIL_GENERATION_BATCH_SIZE |
@@ -737,6 +783,50 @@ python -c "import flash_attn; print(flash_attn.__version__)"
 
 # If it still fails, skip it - mining works without flash-attn (just slower)
 ```
+
+**6. Duplicate Nonce Error After PM2 Restart**
+
+If you see validation failures with "Duplicate nonce" after restarting PM2:
+
+```
+Duplicate nonce 45; invalidating uid
+```
+
+**Cause:** Stale staging files from the previous run mixed with new rollouts. When PM2 restarts, old `.json` files in the staging directory can be picked up alongside new ones, causing the same problem index (nonce) to appear twice.
+
+**Automatic Fix:** As of the latest version, the leader worker automatically cleans up all stale staging files on startup. Update to the latest code to get this fix.
+
+**Manual Fix (if needed):**
+```bash
+# Stop all miners
+pm2 stop all
+
+# Clear staging directory
+rm -rf ~/.cache/grail/.worker-barrier/*.json
+rm -rf ~/.cache/grail/.worker-barrier/*.done
+rm -rf ~/.cache/grail/.worker-barrier/*.tmp
+
+# Restart miners
+pm2 start all
+```
+
+**Prevention:** The barrier system now includes automatic cleanup on leader startup, so this should not occur with current code.
+
+**7. Gap Truncation (Rollouts Discarded)**
+
+If you see logs like:
+```
+⚠️ GAP at problem 129: Truncated 320 rollouts
+```
+
+**Cause:** With round-robin problem distribution (worker 0 handles problems 0,8,16...; worker 1 handles 1,9,17...; etc.), if one worker doesn't complete its assigned problem before the window ends, there's a gap in the problem indices.
+
+**Why it matters:** The validator requires contiguous problem indices. A gap at problem 129 means all rollouts for problems 130+ would fail validation anyway, so they're discarded.
+
+**Solutions:**
+- Ensure all workers have similar generation speeds (same GPU types)
+- Reduce `GRAIL_MINER_SAFETY_BLOCKS` so workers stop at more similar times
+- With well-tuned settings, gaps should affect <5% of windows
 
 ### Health Check Script
 
@@ -1034,13 +1124,17 @@ This script uses the **exact same seed derivation** as the validator, so if it p
 
 With 8x A100 80GB running the 4B model:
 
-| Metric | Expected Value |
-|--------|---------------|
-| Rollouts per worker per window | ~250-400 |
-| Total rollouts per window (8 workers) | ~2000-3200 |
-| GPU utilization | 70-90% |
-| VRAM usage per GPU | ~20-30GB |
-| Network upload per window | ~50-200MB |
+| Metric | HuggingFace Backend | vLLM Backend |
+|--------|---------------------|--------------|
+| Rollouts per worker per window | ~150-250 | ~300-400 |
+| Total rollouts per window (8 workers) | ~1200-2000 | ~2400-3200 |
+| GPU utilization | 70-90% | 80-95% |
+| VRAM usage per GPU | ~20-30GB | ~15-25GB |
+| Network upload per window | ~50-200MB | ~100-300MB |
+
+**Real-world results with optimized vLLM setup:**
+- 2448 rollouts achieved with 8x A100, `GRAIL_MINER_SAFETY_BLOCKS=1`, batch size 16
+- This represents ~306 rollouts per worker per window
 
 ### Scoring Impact
 
