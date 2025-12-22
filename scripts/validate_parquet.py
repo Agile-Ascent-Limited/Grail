@@ -67,6 +67,20 @@ def load_parquet_file(filepath: str) -> dict:
     return deserialize_parquet_to_window(data)
 
 
+def setup_tokenizer_with_chat_template(tokenizer):
+    """
+    Set up the tokenizer with GRAIL's custom chat template.
+
+    CRITICAL: The validator loads the chat template from the checkpoint directory
+    (chat_template.jinja). This template includes the SYSTEM_PROMPT which gets
+    injected into every prompt. We must replicate this for validation to match.
+    """
+    from grail.shared.chat_templates import build_qwen_chat_template
+
+    tokenizer.chat_template = build_qwen_chat_template()
+    return tokenizer
+
+
 def get_prompt_for_seed(seed: int, tokenizer) -> list[int]:
     """
     Reconstruct the expected prompt token IDs for a given seed.
@@ -119,14 +133,14 @@ def validate_rollout(
 
     # Check 1: Prompt length match
     if len(expected_prompt) != prompt_length:
-        # Decode first 100 tokens of each for debugging
-        expected_text = tokenizer.decode(expected_prompt[:100], skip_special_tokens=False)
-        actual_text = tokenizer.decode(actual_prompt[:100], skip_special_tokens=False) if actual_prompt else "(empty)"
+        # Decode full prompts for debugging
+        expected_text = tokenizer.decode(expected_prompt, skip_special_tokens=False)
+        actual_text = tokenizer.decode(actual_prompt, skip_special_tokens=False) if actual_prompt else "(empty)"
         return False, (
             f"Prompt length mismatch: expected={len(expected_prompt)}, "
             f"actual={prompt_length} (file_pos={file_position}, rollout_group={rollout_group}, seed={validator_seed})\n"
-            f"      Expected starts: {expected_text[:200]!r}...\n"
-            f"      Actual starts:   {actual_text[:200]!r}..."
+            f"      Expected:\n{expected_text}\n"
+            f"      Actual:\n{actual_text}"
         )
 
     # Check 2: Prompt tokens match exactly
@@ -223,6 +237,11 @@ def validate_parquet_file(
     # Load tokenizer
     print(f"\nLoading tokenizer ({model_name})...")
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+
+    # Apply GRAIL's custom chat template (with SYSTEM_PROMPT injection)
+    # This matches what the validator does when loading from checkpoint
+    tokenizer = setup_tokenizer_with_chat_template(tokenizer)
+    print("  Applied GRAIL chat template with SYSTEM_PROMPT")
 
     # Group rollouts by rollout_group to check ordering
     print("\nAnalyzing rollout ordering...")
