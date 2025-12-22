@@ -20,7 +20,7 @@ module.exports = {
     {
       name: 'grail-miner-0',
       script: '.venv/bin/grail',
-      args: 'mine',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -42,7 +42,7 @@ module.exports = {
     {
       name: 'grail-miner-1',
       script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -64,7 +64,7 @@ module.exports = {
     {
       name: 'grail-miner-2',
       script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -86,7 +86,7 @@ module.exports = {
     {
       name: 'grail-miner-3',
       script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -108,7 +108,7 @@ module.exports = {
     {
       name: 'grail-miner-4',
       script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -130,7 +130,7 @@ module.exports = {
     {
       name: 'grail-miner-5',
       script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -152,7 +152,7 @@ module.exports = {
     {
       name: 'grail-miner-6',
       script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -174,7 +174,7 @@ module.exports = {
     {
       name: 'grail-miner-7',
       script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail mine"`,
+      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
