@@ -281,6 +281,95 @@ class WorkerBarrier:
         except (json.JSONDecodeError, IOError) as e:
             logger.warning("Failed to update checkpoint in barrier: %s", e)
 
+    def signal_current_window(self, window: int) -> None:
+        """
+        Leader signals which window it's currently working on.
+
+        Followers can use this to avoid jumping ahead of the leader.
+        """
+        if not self.is_leader:
+            return
+
+        if not self.barrier_file.exists():
+            return
+
+        try:
+            with open(self.barrier_file) as f:
+                data = json.load(f)
+
+            data["current_window"] = window
+            data["window_updated_at"] = time.time()
+
+            # Write atomically
+            temp_file = self.barrier_file.with_suffix(".tmp")
+            with open(temp_file, "w") as f:
+                json.dump(data, f, indent=2)
+            temp_file.rename(self.barrier_file)
+        except (json.JSONDecodeError, IOError):
+            pass  # Non-critical, don't spam logs
+
+    def get_leader_window(self) -> int | None:
+        """
+        Get the window the leader is currently working on.
+
+        Returns:
+            Leader's current window, or None if not available
+        """
+        if not self.barrier_file.exists():
+            return None
+
+        try:
+            with open(self.barrier_file) as f:
+                data = json.load(f)
+            return data.get("current_window")
+        except (json.JSONDecodeError, IOError):
+            return None
+
+    async def wait_for_leader_window(
+        self, target_window: int, timeout: float = 120.0
+    ) -> bool:
+        """
+        Follower waits until leader reaches or passes target window.
+
+        Args:
+            target_window: Wait until leader's window >= this value
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if leader caught up, False if timeout
+        """
+        if self.is_leader:
+            return True
+
+        start_time = time.time()
+        poll_interval = 1.0
+
+        while True:
+            leader_window = self.get_leader_window()
+            if leader_window is not None and leader_window >= target_window:
+                return True
+
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                logger.warning(
+                    "Worker %d timeout waiting for leader to reach window %d (leader at %s)",
+                    self.worker_id,
+                    target_window,
+                    leader_window,
+                )
+                return False
+
+            if int(elapsed) % 10 == 0 and elapsed > 0:
+                logger.info(
+                    "Worker %d waiting for leader to reach window %d (leader at %s, %.0fs)...",
+                    self.worker_id,
+                    target_window,
+                    leader_window,
+                    elapsed,
+                )
+
+            await asyncio.sleep(poll_interval)
+
     async def wait_for_checkpoint_sync(
         self, my_checkpoint_window: int | None, timeout: float = 300.0
     ) -> int | None:

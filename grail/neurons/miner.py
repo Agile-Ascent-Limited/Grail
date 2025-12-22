@@ -317,6 +317,10 @@ class MinerNeuron(BaseNeuron):
                     # Window is available - reset tracker
                     window_wait_tracker.reset()
 
+                    # Leader signals which window it's working on so followers can sync
+                    if barrier.is_leader:
+                        barrier.signal_current_window(window_start)
+
                     # Followers: check if leader is downloading a checkpoint BEFORE
                     # we discover/load checkpoints. This ensures all workers sync.
                     if not barrier.is_leader:
@@ -629,6 +633,29 @@ class MinerNeuron(BaseNeuron):
                         logger.warning(f"No inferences generated for window {window_start}")
                         if monitor:
                             await monitor.log_counter("mining/empty_windows")
+
+                        # Followers: if we had no rollouts (likely aborted due to checkpoint),
+                        # wait for leader to finish downloading before continuing.
+                        # This prevents followers from jumping ahead while leader downloads.
+                        if not barrier.is_leader:
+                            # Check if leader is downloading - if so, wait for it
+                            if barrier.is_leader_downloading():
+                                logger.info(
+                                    f"⏳ Worker {worker_config.worker_id} waiting for leader "
+                                    f"to finish checkpoint download..."
+                                )
+                                await barrier.wait_for_checkpoint_sync(
+                                    current_checkpoint_window, timeout=300.0
+                                )
+                            # After download complete, sync to leader's window
+                            leader_window = barrier.get_leader_window()
+                            if leader_window is not None and leader_window != window_start:
+                                logger.info(
+                                    f"📍 Worker {worker_config.worker_id} syncing to leader's "
+                                    f"window {leader_window} (was on {window_start})"
+                                )
+                                # Don't update last_window_start - let next iteration handle it
+                                continue
 
                     last_window_start = window_start
                     # Only leader should cleanup checkpoints, and only after a new
