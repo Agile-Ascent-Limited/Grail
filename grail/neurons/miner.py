@@ -7,9 +7,6 @@ import os
 import traceback
 from types import SimpleNamespace
 
-# Enable DEBUG logging for prompt length mismatch diagnosis
-os.environ.setdefault("GRAIL_LOG_LEVEL", "DEBUG")
-
 import bittensor as bt
 import torch
 
@@ -377,31 +374,7 @@ class MinerNeuron(BaseNeuron):
                                         eval_mode=True,
                                         checkpoint_window=checkpoint_window,
                                     )
-                                    # Load tokenizer and apply chat template from checkpoint
-                                    # (same approach as trainer - use chat_template.jinja if present)
                                     tokenizer = get_tokenizer(str(checkpoint_path))
-
-                                    # Load chat template from checkpoint's .jinja file
-                                    chat_template_path = checkpoint_path / "chat_template.jinja"
-                                    logger.info(
-                                        "[miner] Looking for chat_template.jinja at: %s",
-                                        chat_template_path,
-                                    )
-                                    if not chat_template_path.is_file():
-                                        raise FileNotFoundError(
-                                            f"chat_template.jinja not found in {checkpoint_path}. "
-                                            "Checkpoint may be corrupted - try deleting and re-downloading."
-                                        )
-                                    chat_template_content = chat_template_path.read_text()
-                                    tokenizer.chat_template = chat_template_content
-                                    # Log template details for debugging
-                                    template_preview = chat_template_content[:100].replace("\n", "\\n")
-                                    logger.info(
-                                        "[miner] ✅ Loaded chat_template.jinja from: %s (size=%d bytes, preview: %s...)",
-                                        chat_template_path,
-                                        len(chat_template_content),
-                                        template_preview,
-                                    )
 
                                     current_checkpoint_window = checkpoint_window
                                     checkpoint_changed_this_window = True

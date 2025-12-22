@@ -283,7 +283,11 @@ async def maybe_log_debug_sample(
     if text_logs_emitted >= text_log_limit:
         return text_logs_emitted
     if not sample:
+        logger.debug("[TEXT_LOG] No sample to log")
         return text_logs_emitted
+
+    # Debug: confirm we're attempting to log
+    logger.debug("[TEXT_LOG] Attempting to decode sample (emitted=%d/%d)", text_logs_emitted, text_log_limit)
 
     try:
         prompt_len = int(getattr(sample, "prompt_length", 0) or 0)
@@ -320,7 +324,8 @@ async def maybe_log_debug_sample(
                 "text",
             )
         return text_logs_emitted + 1
-    except Exception:
+    except Exception as e:
+        logger.warning("[TEXT_LOG] Failed to decode sample: %s", e)
         return text_logs_emitted
 
 

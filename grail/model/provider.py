@@ -97,13 +97,23 @@ def get_tokenizer(
     """Load tokenizer with consistent configuration.
 
     Args:
-        model_name: HuggingFace model identifier
+        model_name: HuggingFace model identifier or local checkpoint path
         chat_template: Optional chat template string to install
 
     Returns:
         Configured AutoTokenizer instance
+
+    Note:
+        If model_name is a local directory containing chat_template.jinja,
+        this file is loaded automatically since AutoTokenizer.from_pretrained()
+        does not auto-load .jinja files in all transformers versions.
     """
-    logger.debug(f"Loading tokenizer: {model_name}")
+    import transformers
+    logger.info(
+        "[TOKENIZER] Loading from: %s (transformers=%s)",
+        model_name,
+        transformers.__version__,
+    )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     # Set pad_token_id only if missing (avoid conflating pad/eos semantics)
@@ -112,13 +122,45 @@ def get_tokenizer(
         tokenizer.pad_token_id = tokenizer.eos_token_id
         logger.debug("Set pad_token_id to eos_token_id (model had no pad token)")
 
-    # Install custom chat template if provided
+    # Auto-load chat_template.jinja if present in checkpoint directory
+    # This is needed because AutoTokenizer.from_pretrained() doesn't auto-load
+    # .jinja files in all transformers versions (the trainer saves templates there)
+    if chat_template is None:
+        model_path = Path(model_name)
+        jinja_path = model_path / "chat_template.jinja"
+        if model_path.is_dir() and jinja_path.is_file():
+            try:
+                jinja_content = jinja_path.read_text(encoding="utf-8")
+                tokenizer.chat_template = jinja_content
+                logger.info(
+                    "[TOKENIZER] ✅ Loaded chat_template.jinja from checkpoint: %s (%d bytes)",
+                    jinja_path,
+                    len(jinja_content),
+                )
+            except Exception as e:
+                logger.warning("[TOKENIZER] Failed to load chat_template.jinja: %s", e)
+
+    # Install custom chat template if explicitly provided (overrides .jinja file)
     if chat_template is not None:
         try:
             tokenizer.chat_template = chat_template
-            logger.debug("Installed custom chat template")
+            logger.debug("Installed custom chat template (explicit parameter)")
         except Exception as e:
             logger.warning(f"Failed to set chat template: {e}")
+
+    # Log the actual chat_template being used for debugging prompt mismatches
+    actual_template = getattr(tokenizer, "chat_template", None)
+    if actual_template:
+        template_hash = hash(actual_template) % 10000  # Short hash for comparison
+        template_preview = actual_template[:80].replace("\n", "\\n")
+        logger.info(
+            "[TOKENIZER] chat_template loaded: hash=%04d, len=%d, preview='%s...'",
+            template_hash,
+            len(actual_template),
+            template_preview,
+        )
+    else:
+        logger.warning("[TOKENIZER] NO chat_template set - apply_chat_template may fail or use defaults")
 
     return tokenizer
 
