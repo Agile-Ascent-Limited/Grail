@@ -2,17 +2,14 @@
 // Each worker runs on its own GPU with vLLM (auto-spawned server)
 //
 // LEADER-FOLLOWER PATTERN:
-//   Worker 0 (leader) starts immediately and initializes blockchain/checkpoints.
-//   Workers 1-7 (followers) start after 30s delay to let leader init first.
+//   Worker 0 (leader) initializes blockchain/checkpoints and signals ready via barrier file.
+//   Workers 1-7 (followers) wait for leader's barrier signal before mining (no PM2 delay needed).
 //
 // SETUP:
-//   1. pm2 start ecosystem.config.js      # Start miners with HF backend
+//   1. pm2 start ecosystem.config.js      # Start miners with vLLM backend
 //
 // STOP:
 //   pm2 stop all
-
-// Delay in seconds for follower workers (1-7) to let leader initialize first
-const FOLLOWER_DELAY_SECONDS = 30;
 
 module.exports = {
   apps: [
@@ -30,7 +27,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '3',  // Extra buffer before deadline (3 blocks = ~36s)
+        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive: 1 block = ~12s buffer
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -38,11 +35,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-0-out.log',
       merge_logs: true,
     },
-    // Worker 1 (FOLLOWER) - GPU 1, starts after delay
+    // Worker 1 (FOLLOWER) - GPU 1, waits for leader barrier
     {
       name: 'grail-miner-1',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -52,7 +49,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '3',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Follower: just needs to finish current gen
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -60,11 +57,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-1-out.log',
       merge_logs: true,
     },
-    // Worker 2 (FOLLOWER) - GPU 2, starts after delay
+    // Worker 2 (FOLLOWER) - GPU 2, waits for leader barrier
     {
       name: 'grail-miner-2',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -74,7 +71,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '3',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Follower: just needs to finish current gen
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -82,11 +79,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-2-out.log',
       merge_logs: true,
     },
-    // Worker 3 (FOLLOWER) - GPU 3, starts after delay
+    // Worker 3 (FOLLOWER) - GPU 3, waits for leader barrier
     {
       name: 'grail-miner-3',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -96,7 +93,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '3',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Follower: just needs to finish current gen
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -104,11 +101,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-3-out.log',
       merge_logs: true,
     },
-    // Worker 4 (FOLLOWER) - GPU 4, starts after delay
+    // Worker 4 (FOLLOWER) - GPU 4, waits for leader barrier
     {
       name: 'grail-miner-4',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -118,7 +115,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '3',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Follower: just needs to finish current gen
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -126,11 +123,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-4-out.log',
       merge_logs: true,
     },
-    // Worker 5 (FOLLOWER) - GPU 5, starts after delay
+    // Worker 5 (FOLLOWER) - GPU 5, waits for leader barrier
     {
       name: 'grail-miner-5',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -140,7 +137,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '3',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Follower: just needs to finish current gen
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -148,11 +145,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-5-out.log',
       merge_logs: true,
     },
-    // Worker 6 (FOLLOWER) - GPU 6, starts after delay
+    // Worker 6 (FOLLOWER) - GPU 6, waits for leader barrier
     {
       name: 'grail-miner-6',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -162,7 +159,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '3',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Follower: just needs to finish current gen
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -170,11 +167,11 @@ module.exports = {
       out_file: '/var/log/grail/worker-6-out.log',
       merge_logs: true,
     },
-    // Worker 7 (FOLLOWER) - GPU 7, starts after delay
+    // Worker 7 (FOLLOWER) - GPU 7, waits for leader barrier
     {
       name: 'grail-miner-7',
-      script: 'bash',
-      args: `-c "sleep ${FOLLOWER_DELAY_SECONDS} && exec .venv/bin/grail -vv mine"`,
+      script: '.venv/bin/grail',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -184,7 +181,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '3',
+        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Follower: just needs to finish current gen
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
