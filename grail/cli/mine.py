@@ -9,7 +9,7 @@ import math
 import os
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import bittensor as bt
 import torch
@@ -544,6 +544,7 @@ async def generate_rollouts_for_window(
     use_drand: bool,
     checkpoint_window: int,
     worker_config: WorkerConfig | None = None,
+    abort_check: Callable[[], bool] | None = None,
 ) -> list[dict]:
     """Generate as many GRPO rollouts as safely possible within a window.
 
@@ -567,6 +568,8 @@ async def generate_rollouts_for_window(
         use_drand: Whether drand was used in randomness generation.
         checkpoint_window: The checkpoint window used for this generation
         worker_config: Optional multi-worker configuration for problem partitioning
+        abort_check: Optional callback that returns True if generation should abort
+                     (e.g., leader is downloading a new checkpoint)
 
     Returns:
         List of signed rollout data ready for upload.
@@ -604,6 +607,15 @@ async def generate_rollouts_for_window(
         logger.info("Using batch_size=%d for parallel rollout generation", batch_size)
 
     while True:
+        # Check if we should abort generation (e.g., leader downloading new checkpoint)
+        if abort_check is not None and abort_check():
+            logger.warning(
+                "⏸️ Aborting generation: leader is downloading a new checkpoint "
+                "(generated %d rollouts so far)",
+                len(inferences),
+            )
+            break
+
         # Multi-worker optimization: calculate next problem for this worker
         # without fetching current_block for each skipped problem
         problem_count += 1

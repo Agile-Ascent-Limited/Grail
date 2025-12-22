@@ -365,6 +365,39 @@ class WorkerBarrier:
         except (json.JSONDecodeError, IOError):
             return None, None
 
+    def is_leader_downloading(self, my_checkpoint_window: int | None = None) -> bool:
+        """
+        Non-blocking check if leader is currently downloading a checkpoint.
+
+        Args:
+            my_checkpoint_window: If provided, only returns True if leader is
+                                  downloading a NEWER checkpoint than this.
+
+        Returns:
+            True if leader is downloading (and it's newer than ours, if specified)
+        """
+        if self.is_leader:
+            return False
+
+        if not self.barrier_file.exists():
+            return False
+
+        try:
+            with open(self.barrier_file) as f:
+                data = json.load(f)
+
+            downloading_checkpoint = data.get("downloading_checkpoint")
+            if downloading_checkpoint is None:
+                return False
+
+            # If we have a checkpoint window, only abort if leader's is newer
+            if my_checkpoint_window is not None:
+                return downloading_checkpoint > my_checkpoint_window
+
+            return True
+        except (json.JSONDecodeError, IOError):
+            return False
+
     def cleanup(self) -> None:
         """
         Leader cleans up barrier file on shutdown.

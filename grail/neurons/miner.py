@@ -486,6 +486,10 @@ class MinerNeuron(BaseNeuron):
                         self.use_drand,
                     )
 
+                    # Create abort check callback for followers to detect leader downloading
+                    def abort_check() -> bool:
+                        return barrier.is_leader_downloading(current_checkpoint_window)
+
                     inferences = await generate_rollouts_for_window(
                         wallet,
                         model,
@@ -499,6 +503,7 @@ class MinerNeuron(BaseNeuron):
                         self.use_drand,
                         checkpoint_window,
                         worker_config,  # Multi-worker support
+                        abort_check=abort_check,
                     )
 
                     if inferences:
