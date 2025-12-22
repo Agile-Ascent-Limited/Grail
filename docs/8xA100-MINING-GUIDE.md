@@ -828,6 +828,42 @@ If you see logs like:
 - Reduce `GRAIL_MINER_SAFETY_BLOCKS` so workers stop at more similar times
 - With well-tuned settings, gaps should affect <5% of windows
 
+**8. Duplicate Nonce Error with Batch Size > 10 (Formula Collision)**
+
+If you see validation failures with "Duplicate nonce" even with fresh staging files:
+
+```
+Duplicate nonce 10; invalidating uid
+```
+
+**Cause:** In older code versions, the nonce formula used a multiplier of 10:
+```python
+rollout_nonce = base_nonce * 10 + rollout_idx
+```
+
+With `GRAIL_GENERATION_BATCH_SIZE=16`, rollout indices go 0-15. This causes collisions:
+- Rollout group 0, index 10 → nonce = 0×10 + 10 = **10**
+- Rollout group 1, index 0 → nonce = 1×10 + 0 = **10** (collision!)
+
+**Fix:** Update to the latest code. The formula now uses a multiplier of 100:
+```python
+rollout_nonce = base_nonce * 100 + rollout_idx
+```
+
+This supports batch sizes up to 99 without collisions.
+
+**Verification:** Use the validation script to check for duplicate nonces:
+```bash
+python scripts/validate_parquet.py /path/to/your/rollouts.parquet
+```
+
+The script will show:
+- `Duplicate nonces detected` if the bug is present
+- Smart diagnosis to identify formula collision vs stale file issues
+- 50-entry sample dump for manual inspection
+
+**Key indicator:** If duplicates follow a pattern like nonces 10-15 appearing twice (once from high rollout indices, once from low indices in next group), it's the formula collision bug.
+
 ### Health Check Script
 
 Create `check_miners.sh`:
