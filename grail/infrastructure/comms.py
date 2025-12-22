@@ -1210,7 +1210,12 @@ async def sink_window_inferences(
 
     Uses Apache Parquet for efficient columnar storage with snappy compression,
     providing better compression ratios and faster serialization than JSON.
+
+    If GRAIL_SAVE_PARQUET_LOCALLY=1, also saves a local copy to ~/.cache/grail/uploads/
+    for debugging and validation purposes.
     """
+    from pathlib import Path
+
     from .parquet_io import serialize_window_to_parquet
 
     key = f"grail/windows/{wallet.hotkey.ss58_address}-window-{window_start}.parquet"
@@ -1227,6 +1232,23 @@ async def sink_window_inferences(
 
     body = serialize_window_to_parquet(window_data)
     logger.debug(f"[SINK] window={window_start} count={len(inferences)} → key={key}")
+
+    # Save local copy if enabled (for debugging/validation)
+    if os.getenv("GRAIL_SAVE_PARQUET_LOCALLY", "0") == "1":
+        try:
+            cache_dir = os.getenv("GRAIL_CACHE_DIR", "")
+            if cache_dir:
+                uploads_dir = Path(cache_dir) / "uploads"
+            else:
+                uploads_dir = Path.home() / ".cache" / "grail" / "uploads"
+            uploads_dir.mkdir(parents=True, exist_ok=True)
+
+            local_path = uploads_dir / f"{wallet.hotkey.ss58_address}-window-{window_start}.parquet"
+            with open(local_path, "wb") as f:
+                f.write(body)
+            logger.info(f"💾 Saved local parquet copy: {local_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save local parquet copy: {e}")
 
     success = await upload_file_chunked(key, body, credentials=credentials, use_write=True)
     if success:

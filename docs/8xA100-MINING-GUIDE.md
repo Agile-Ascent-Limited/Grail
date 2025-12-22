@@ -823,6 +823,187 @@ Subsequent windows are faster as checkpoints are cached and vLLM is warmed up.
 
 ---
 
+## Seed Derivation and Validation
+
+Understanding how the validator verifies rollouts is critical for multi-GPU mining. This section explains why rollout ordering matters.
+
+### How Problems Are Generated
+
+Each problem is generated deterministically from a **seed** derived from three inputs:
+
+```
+seed = derive_env_seed(miner_hotkey, window_block_hash, problem_index)
+```
+
+- **miner_hotkey**: Your wallet's SS58 address (unique to you)
+- **window_block_hash**: Randomness from the blockchain for this window (same for all miners)
+- **problem_index**: Which problem (0, 1, 2, 3...)
+
+This determinism allows the validator to **reconstruct the exact same problem** independently.
+
+### How Validation Works
+
+When the validator checks your rollouts:
+
+1. **Reads rollouts from your uploaded file sequentially**
+2. **Assigns `group_index` based on file position** (0, 1, 2, 3...)
+3. **Derives the seed**: `seed = derive_env_seed(your_hotkey, window_hash, group_index)`
+4. **Reconstructs the expected prompt** from that seed
+5. **Compares** against the actual prompt in your rollout
+
+If the prompts match → `env_prompt_valid = True` ✓
+If they don't match → `env_prompt_valid = False` ✗
+
+### Why File Order Matters (Multi-GPU)
+
+With multiple workers, problems are distributed round-robin:
+- Worker 0 handles: 0, 8, 16, 24, 32...
+- Worker 1 handles: 1, 9, 17, 25, 33...
+- Worker 2 handles: 2, 10, 18, 26, 34...
+- etc.
+
+**Without sorting**, rollouts would be uploaded in worker order:
+```
+File position 0 → problem 0 (worker 0)  ✓ validator uses group_index=0
+File position 1 → problem 8 (worker 0)  ✗ validator uses group_index=1, but seed was for problem 8!
+File position 2 → problem 16 (worker 0) ✗ validator uses group_index=2, but seed was for problem 16!
+...
+```
+
+**With sorting by problem_index**, rollouts are in correct order:
+```
+File position 0 → problem 0  ✓ validator uses group_index=0
+File position 1 → problem 1  ✓ validator uses group_index=1
+File position 2 → problem 2  ✓ validator uses group_index=2
+...
+```
+
+### Gap Handling
+
+If a worker doesn't finish a problem before the window ends, there's a **gap** in the problem indices:
+
+```
+Problems completed: 0, 1, 2, 3, 4, 6, 7, 8...  (missing 5!)
+```
+
+Without gap handling:
+```
+File position 5 → problem 6  ✗ validator expects problem 5's prompt!
+File position 6 → problem 7  ✗ validator expects problem 6's prompt!
+...all subsequent rollouts fail
+```
+
+The miner automatically **truncates at the first gap**, keeping only contiguous problems:
+```
+File positions 0-4 → problems 0-4 (all pass validation)
+Problems 6+ are dropped (would fail anyway)
+```
+
+### What You'll See in Logs
+
+**Successful aggregation (no gaps):**
+```
+✅ No gaps: 72 contiguous problems [0-71]
+Leader aggregated 1152 total rollouts from 8 workers for window 7155540 (sorted by problem_index)
+```
+
+**Aggregation with gap detected:**
+```
+⚠️ GAP at problem 59: Truncated 160 rollouts (keeping 59 contiguous problems [0-58])
+Leader aggregated 944 total rollouts from 8 workers for window 7155540 (sorted by problem_index)
+```
+
+The truncated rollouts would have failed validation anyway, so it's better to upload fewer valid rollouts than more invalid ones.
+
+### Minimizing Gaps
+
+Gaps occur when one worker finishes fewer problems than others. To minimize:
+
+1. **Use similar GPUs**: Mixed GPU types (e.g., A100 + H100) cause timing differences
+2. **Increase safety margin**: Set `GRAIL_MINER_SAFETY_BLOCKS=4` (default 3) to stop generation earlier
+3. **Balance workload**: Ensure all workers have similar generation speeds
+
+With well-balanced workers, gaps should be rare (< 5% of windows).
+
+### Local Parquet Saving
+
+To save parquet files locally for debugging and validation, enable local saving:
+
+```bash
+# Add to .env or set in ecosystem.config.js
+GRAIL_SAVE_PARQUET_LOCALLY=1
+```
+
+Files are saved to:
+```
+~/.cache/grail/uploads/{hotkey}-window-{window}.parquet
+# Or if GRAIL_CACHE_DIR is set:
+$GRAIL_CACHE_DIR/uploads/{hotkey}-window-{window}.parquet
+```
+
+### Self-Validation Tool
+
+You can validate your parquet files locally before the validator checks them:
+
+```bash
+# Validate a local parquet file
+python scripts/validate_parquet.py /path/to/hotkey-window-123456.parquet
+
+# Verbose output (show each rollout)
+python scripts/validate_parquet.py /path/to/file.parquet -v
+
+# Show more failure details
+python scripts/validate_parquet.py /path/to/file.parquet --show-failures 10
+```
+
+**Example output (all valid):**
+```
+Loading parquet file: 5Gxxx-window-7155540.parquet
+  Hotkey: 5Gxxx...
+  Window: 7155540
+  Rollouts: 944
+
+Fetching window hash from chain...
+  Window hash: 0xabc123def456...
+
+Analyzing rollout ordering...
+  Rollouts are sorted by rollout_group
+  Group range: 0 to 58
+  No gaps: contiguous from 0 to 58
+
+Validating rollouts...
+
+============================================================
+VALIDATION SUMMARY
+============================================================
+Valid rollouts:   944/944 (100.0%)
+Failed rollouts:  0
+
+✅ All rollouts should pass env_prompt_valid!
+```
+
+**Example output (failures detected):**
+```
+Analyzing rollout ordering...
+  WARNING: Rollouts are NOT sorted by rollout_group!
+  First 10 groups in file order: [0, 8, 16, 24, 1, 9, 17, 25, 2, 10]
+
+Validating rollouts...
+  [FAIL] Token mismatch at position 0: expected=128000, actual=128001 (file_pos=1, rollout_group=8, seed=...)
+
+============================================================
+VALIDATION SUMMARY
+============================================================
+Valid rollouts:   128/1024 (12.5%)
+Failed rollouts:  896
+
+❌ 896 rollouts will FAIL env_prompt_valid
+```
+
+This script uses the **exact same seed derivation** as the validator, so if it passes locally, it should pass validation on-chain.
+
+---
+
 ## Expected Performance
 
 With 8x A100 80GB running the 4B model:
