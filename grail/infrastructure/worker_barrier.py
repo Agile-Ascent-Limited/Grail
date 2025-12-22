@@ -210,11 +210,44 @@ class WorkerBarrier:
                     elapsed,
                 )
 
+    def signal_checkpoint_downloading(self, checkpoint_window: int) -> None:
+        """
+        Leader signals that it's downloading a new checkpoint.
+
+        Followers should wait before generating if they see this.
+        """
+        if not self.is_leader:
+            return
+
+        if not self.barrier_file.exists():
+            logger.warning("Cannot signal downloading: barrier file doesn't exist")
+            return
+
+        try:
+            with open(self.barrier_file) as f:
+                data = json.load(f)
+
+            data["downloading_checkpoint"] = checkpoint_window
+            data["download_started_at"] = time.time()
+
+            # Write atomically
+            temp_file = self.barrier_file.with_suffix(".tmp")
+            with open(temp_file, "w") as f:
+                json.dump(data, f, indent=2)
+            temp_file.rename(self.barrier_file)
+
+            logger.info(
+                "Leader signaling: downloading checkpoint %d",
+                checkpoint_window,
+            )
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning("Failed to signal downloading: %s", e)
+
     def update_checkpoint(self, checkpoint_path: str, checkpoint_window: int) -> None:
         """
         Leader updates the checkpoint info in barrier file.
 
-        Called when a new checkpoint is downloaded.
+        Called when a new checkpoint is downloaded. Clears downloading state.
         """
         if not self.is_leader:
             return
@@ -230,6 +263,9 @@ class WorkerBarrier:
             data["checkpoint_path"] = checkpoint_path
             data["checkpoint_window"] = checkpoint_window
             data["checkpoint_updated_at"] = time.time()
+            # Clear downloading state
+            data.pop("downloading_checkpoint", None)
+            data.pop("download_started_at", None)
 
             # Write atomically
             temp_file = self.barrier_file.with_suffix(".tmp")
@@ -237,13 +273,80 @@ class WorkerBarrier:
                 json.dump(data, f, indent=2)
             temp_file.rename(self.barrier_file)
 
-            logger.debug(
+            logger.info(
                 "Leader updated checkpoint in barrier: %s (window %d)",
                 checkpoint_path,
                 checkpoint_window,
             )
         except (json.JSONDecodeError, IOError) as e:
             logger.warning("Failed to update checkpoint in barrier: %s", e)
+
+    async def wait_for_checkpoint_sync(
+        self, my_checkpoint_window: int | None, timeout: float = 300.0
+    ) -> int | None:
+        """
+        Follower waits if leader is downloading a newer checkpoint.
+
+        Args:
+            my_checkpoint_window: Follower's current checkpoint window
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            The checkpoint window to use, or None if should continue with current
+        """
+        if self.is_leader:
+            return my_checkpoint_window
+
+        if not self.barrier_file.exists():
+            return my_checkpoint_window
+
+        start_time = time.time()
+        poll_interval = 1.0
+
+        while True:
+            try:
+                with open(self.barrier_file) as f:
+                    data = json.load(f)
+
+                leader_checkpoint = data.get("checkpoint_window")
+                downloading_checkpoint = data.get("downloading_checkpoint")
+
+                # If leader is downloading a checkpoint newer than ours, wait
+                if downloading_checkpoint is not None:
+                    if my_checkpoint_window is None or downloading_checkpoint > my_checkpoint_window:
+                        elapsed = time.time() - start_time
+                        if elapsed > timeout:
+                            logger.warning(
+                                "Timeout waiting for leader to download checkpoint %d",
+                                downloading_checkpoint,
+                            )
+                            return my_checkpoint_window
+
+                        if int(elapsed) % 10 == 0 and elapsed > 0:
+                            logger.info(
+                                "Worker %d waiting for leader to download checkpoint %d (%.0fs)...",
+                                self.worker_id,
+                                downloading_checkpoint,
+                                elapsed,
+                            )
+                        await asyncio.sleep(poll_interval)
+                        continue
+
+                # Leader finished downloading or no download in progress
+                if leader_checkpoint is not None:
+                    if my_checkpoint_window is None or leader_checkpoint > my_checkpoint_window:
+                        logger.info(
+                            "Worker %d syncing to leader's checkpoint %d (was %s)",
+                            self.worker_id,
+                            leader_checkpoint,
+                            my_checkpoint_window,
+                        )
+                        return leader_checkpoint
+
+                return my_checkpoint_window
+
+            except (json.JSONDecodeError, IOError):
+                return my_checkpoint_window
 
     def get_checkpoint_info(self) -> tuple[str | None, int | None]:
         """

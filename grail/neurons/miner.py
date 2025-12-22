@@ -326,6 +326,10 @@ class MinerNeuron(BaseNeuron):
                     # Load checkpoint if discovered and different from current
                     if checkpoint_window is not None and checkpoint_window >= 0:
                         if current_checkpoint_window != checkpoint_window:
+                            # Leader signals to followers that it's downloading
+                            if barrier.is_leader:
+                                barrier.signal_checkpoint_downloading(checkpoint_window)
+
                             # Time checkpoint download/retrieval
                             timer_ctx = (
                                 monitor.timer("profiling/checkpoint_download")
@@ -356,6 +360,12 @@ class MinerNeuron(BaseNeuron):
                                     tokenizer = get_tokenizer(str(checkpoint_path))
                                     current_checkpoint_window = checkpoint_window
                                     checkpoint_changed_this_window = True
+
+                                    # Leader updates barrier so followers know checkpoint is ready
+                                    if barrier.is_leader:
+                                        barrier.update_checkpoint(
+                                            str(checkpoint_path), checkpoint_window
+                                        )
 
                                     # Log model configuration details
                                     if torch.cuda.is_available():
@@ -447,6 +457,20 @@ class MinerNeuron(BaseNeuron):
                         await asyncio.sleep(30)
                         continue
 
+                    # Followers: wait if leader is downloading a newer checkpoint
+                    # This prevents generating with outdated checkpoints
+                    if not barrier.is_leader:
+                        synced_checkpoint = await barrier.wait_for_checkpoint_sync(
+                            current_checkpoint_window, timeout=180.0
+                        )
+                        if synced_checkpoint is not None and synced_checkpoint != current_checkpoint_window:
+                            logger.info(
+                                f"⏳ Leader has newer checkpoint {synced_checkpoint}, "
+                                f"waiting for next iteration to sync"
+                            )
+                            await asyncio.sleep(2)
+                            continue  # Will load new checkpoint on next iteration
+
                     logger.info(
                         f"🔥 Starting inference generation for window "
                         f"{window_start}-{window_start + WINDOW_LENGTH - 1}"
@@ -501,6 +525,22 @@ class MinerNeuron(BaseNeuron):
                                     window_start, timeout=30.0
                                 )
                                 all_inferences = rollout_staging.aggregate_rollouts(window_start)
+
+                                # Filter out rollouts with mismatched checkpoint_window
+                                # This prevents hard failures when some workers lag behind on
+                                # checkpoint updates (validator rejects mixed checkpoint submissions)
+                                if all_inferences and current_checkpoint_window is not None:
+                                    original_count = len(all_inferences)
+                                    all_inferences = [
+                                        inf for inf in all_inferences
+                                        if inf.get("checkpoint_window") == current_checkpoint_window
+                                    ]
+                                    filtered_count = original_count - len(all_inferences)
+                                    if filtered_count > 0:
+                                        logger.warning(
+                                            f"⚠️ Filtered {filtered_count}/{original_count} rollouts "
+                                            f"with mismatched checkpoint_window (expected {current_checkpoint_window})"
+                                        )
 
                                 if all_inferences:
                                     logger.info(
