@@ -379,20 +379,25 @@ class VLLMServerBackend:
                 for attempt in range(max_retries):
                     req_start = time.time()
                     try:
-                        # CRITICAL: Use prompt_token_ids instead of decoded text
-                        # This avoids the tokenize→decode→re-tokenize round-trip which can
-                        # cause token mismatches if chat templates differ between miner and vLLM
+                        # Build completion kwargs
+                        # Note: prompt is required by OpenAI client but vLLM ignores it
+                        # when prompt_token_ids is provided in extra_body
                         completion_kwargs: dict[str, Any] = {
                             "model": self._model_name,
-                            "prompt_token_ids": prompt_ids,  # Pass token IDs directly
+                            "prompt": "",  # Placeholder - vLLM uses prompt_token_ids instead
                             "max_tokens": int(params.max_new_tokens),
                             "temperature": float(params.temperature),
                             "top_p": float(params.top_p),
                             # Ensure single completion per request
                             "n": 1,
                         }
-                        # Provide vendor extensions via extra_body for vLLM
-                        extra_body: dict[str, Any] = {}
+                        # CRITICAL: Use prompt_token_ids instead of decoded text
+                        # This avoids the tokenize→decode→re-tokenize round-trip which can
+                        # cause token mismatches if chat templates differ between miner and vLLM
+                        # Must go in extra_body since OpenAI client doesn't support it natively
+                        extra_body: dict[str, Any] = {
+                            "prompt_token_ids": prompt_ids,  # Pass token IDs directly to vLLM
+                        }
                         if params.top_k is not None:
                             extra_body["top_k"] = int(params.top_k)
                         if params.repetition_penalty is not None:
