@@ -611,10 +611,11 @@ async def generate_rollouts_for_window(
         if abort_check is not None and abort_check():
             logger.warning(
                 "⏸️ Aborting generation: leader is downloading a new checkpoint "
-                "(generated %d rollouts so far)",
+                "(discarding %d rollouts generated with old checkpoint)",
                 len(inferences),
             )
-            break
+            # Return empty - rollouts with old checkpoint would be filtered anyway
+            return []
 
         # Multi-worker optimization: calculate next problem for this worker
         # without fetching current_block for each skipped problem
