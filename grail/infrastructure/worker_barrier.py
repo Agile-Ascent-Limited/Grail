@@ -685,18 +685,32 @@ class RolloutStaging:
         # problem order (P0, P1, P2...), causing env_prompt_valid check failures.
         all_rollouts.sort(key=lambda r: r.get("rollout_group", 0))
 
-        # Detect gaps in problem sequence (validator requires contiguous problem indices)
+        # Detect gaps and TRUNCATE at first gap to ensure contiguous indices.
+        # Validator uses file position as group_index - any gap causes all subsequent
+        # rollouts to fail validation because their file position won't match their
+        # actual problem_index.
         if all_rollouts:
             problem_indices = sorted(set(r.get("rollout_group", 0) for r in all_rollouts))
-            expected = list(range(problem_indices[0], problem_indices[-1] + 1))
-            missing = set(expected) - set(problem_indices)
-            if missing:
+
+            # Find first gap (first missing index starting from 0)
+            first_gap = None
+            for expected_idx in range(problem_indices[-1] + 1):
+                if expected_idx not in problem_indices:
+                    first_gap = expected_idx
+                    break
+
+            if first_gap is not None:
+                # Truncate: keep only rollouts with problem_index < first_gap
+                original_count = len(all_rollouts)
+                all_rollouts = [r for r in all_rollouts if r.get("rollout_group", 0) < first_gap]
+                truncated_count = original_count - len(all_rollouts)
+
                 logger.warning(
-                    "⚠️ GAP DETECTED: Missing problem indices %s (have %d problems, expected %d). "
-                    "This may cause validation failures!",
-                    sorted(missing)[:10],  # Show first 10 missing
-                    len(problem_indices),
-                    len(expected),
+                    "⚠️ GAP at problem %d: Truncated %d rollouts (keeping %d contiguous problems [0-%d])",
+                    first_gap,
+                    truncated_count,
+                    first_gap,
+                    first_gap - 1,
                 )
             else:
                 logger.info(
