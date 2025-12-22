@@ -317,6 +317,19 @@ class MinerNeuron(BaseNeuron):
                     # Window is available - reset tracker
                     window_wait_tracker.reset()
 
+                    # Followers: check if leader is downloading a checkpoint BEFORE
+                    # we discover/load checkpoints. This ensures all workers sync.
+                    if not barrier.is_leader:
+                        leader_ckpt = await barrier.wait_for_checkpoint_sync(
+                            current_checkpoint_window, timeout=180.0
+                        )
+                        # If leader has a newer checkpoint ready or downloading, we'll get it
+                        # through checkpoint_manager below. Just log for visibility.
+                        if leader_ckpt is not None and leader_ckpt != current_checkpoint_window:
+                            logger.info(
+                                f"⏳ Leader has checkpoint {leader_ckpt}, will sync..."
+                            )
+
                     # Discover latest ready checkpoint (before current window)
                     # This allows miners to proceed even if trainer is lagging
                     checkpoint_window = await checkpoint_manager.get_latest_ready_checkpoint(
@@ -456,20 +469,6 @@ class MinerNeuron(BaseNeuron):
                         logger.error("Model or tokenizer not loaded, cannot mine")
                         await asyncio.sleep(30)
                         continue
-
-                    # Followers: wait if leader is downloading a newer checkpoint
-                    # This prevents generating with outdated checkpoints
-                    if not barrier.is_leader:
-                        synced_checkpoint = await barrier.wait_for_checkpoint_sync(
-                            current_checkpoint_window, timeout=180.0
-                        )
-                        if synced_checkpoint is not None and synced_checkpoint != current_checkpoint_window:
-                            logger.info(
-                                f"⏳ Leader has newer checkpoint {synced_checkpoint}, "
-                                f"waiting for next iteration to sync"
-                            )
-                            await asyncio.sleep(2)
-                            continue  # Will load new checkpoint on next iteration
 
                     logger.info(
                         f"🔥 Starting inference generation for window "
