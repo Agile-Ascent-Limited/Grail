@@ -359,6 +359,17 @@ class CheckpointManager:
             return None
 
         # LEADER PATH: Acquire lock and download
+        # Force-clear any existing lock - leader is authoritative and any existing
+        # lock is stale (from a previous run or crashed process)
+        lock_dir = self.cache_root / ".locks"
+        lock_file = lock_dir / f"checkpoint-{window}.lock"
+        if lock_file.exists():
+            try:
+                lock_file.unlink()
+                logger.info("Leader cleared stale lock file for checkpoint %s", window)
+            except IOError as e:
+                logger.warning("Failed to clear stale lock: %s", e)
+
         async with CheckpointLock(self.cache_root, window) as lock:
             if not lock.should_download:
                 # Another process already downloading (shouldn't happen with leader-only,
