@@ -361,43 +361,34 @@ class VLLMServerBackend:
 
         batch_start = time.time()
         batch_size = len(prompt_ids_batch)
-        logger.info(
-            "vLLMServer: Starting ASYNC batch of %d prompts (using prompt_token_ids directly)",
-            batch_size,
-        )
+        logger.info("vLLMServer: Starting ASYNC batch of %d prompts", batch_size)
+
+        # Decode prompt IDs to text for vLLM API
+        prompts = _decode_prompts(self._tokenizer, prompt_ids_batch)
 
         # Use configurable semaphore to control client-side concurrency
         sem = asyncio.Semaphore(self._max_concurrent_requests)
 
         async def _call_one_async(
-            idx: int, prompt_ids: list[int], rnd_seed: int | None
+            idx: int, prompt: str, rnd_seed: int | None
         ) -> tuple[int, str, list[float] | None, list[int] | None]:
-            """Send prompt token IDs directly to vLLM to avoid decode/re-encode round-trip."""
             max_retries = 3
             base_backoff = 1.0
             async with sem:
                 for attempt in range(max_retries):
                     req_start = time.time()
                     try:
-                        # Build completion kwargs
-                        # Note: prompt is required by OpenAI client but vLLM ignores it
-                        # when prompt_token_ids is provided in extra_body
                         completion_kwargs: dict[str, Any] = {
                             "model": self._model_name,
-                            "prompt": "",  # Placeholder - vLLM uses prompt_token_ids instead
+                            "prompt": prompt,
                             "max_tokens": int(params.max_new_tokens),
                             "temperature": float(params.temperature),
                             "top_p": float(params.top_p),
                             # Ensure single completion per request
                             "n": 1,
                         }
-                        # CRITICAL: Use prompt_token_ids instead of decoded text
-                        # This avoids the tokenize→decode→re-tokenize round-trip which can
-                        # cause token mismatches if chat templates differ between miner and vLLM
-                        # Must go in extra_body since OpenAI client doesn't support it natively
-                        extra_body: dict[str, Any] = {
-                            "prompt_token_ids": prompt_ids,  # Pass token IDs directly to vLLM
-                        }
+                        # Provide vendor extensions via extra_body for vLLM
+                        extra_body: dict[str, Any] = {}
                         if params.top_k is not None:
                             extra_body["top_k"] = int(params.top_k)
                         if params.repetition_penalty is not None:
@@ -501,9 +492,9 @@ class VLLMServerBackend:
             return (idx, "", None, None)
 
         tasks = []
-        for idx, prompt_ids in enumerate(prompt_ids_batch):
+        for idx, prompt in enumerate(prompts):
             seed_val = seeds[idx] if seeds and idx < len(seeds) else None
-            tasks.append(_call_one_async(idx, prompt_ids, seed_val))
+            tasks.append(_call_one_async(idx, prompt, seed_val))
 
         results_tuples = await asyncio.gather(*tasks, return_exceptions=False)
         completions: dict[int, str] = {}
