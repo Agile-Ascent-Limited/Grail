@@ -941,6 +941,32 @@ Files are saved to:
 $GRAIL_CACHE_DIR/uploads/{hotkey}-window-{window}.parquet
 ```
 
+### Downloading Parquet Files from R2
+
+To download parquet files from R2 for debugging or validation:
+
+```bash
+# First install boto3 if not already installed
+uv pip install boto3
+
+# List all parquet files in your bucket
+python scripts/download_parquet.py --list
+
+# List files for a specific hotkey
+python scripts/download_parquet.py --list --hotkey 5Gxxx...
+
+# Download specific file by hotkey and window
+python scripts/download_parquet.py --hotkey 5Gxxx... --window 7155690
+
+# Download to specific directory
+python scripts/download_parquet.py --hotkey 5Gxxx... --window 7155690 --output /tmp/
+
+# Download latest N files for a hotkey
+python scripts/download_parquet.py --hotkey 5Gxxx... --latest 5
+```
+
+This uses your existing R2 credentials from `.env` (R2_ACCOUNT_ID, R2_BUCKET_ID, R2_READ_ACCESS_KEY_ID, R2_READ_SECRET_ACCESS_KEY).
+
 ### Self-Validation Tool
 
 You can validate your parquet files locally before the validator checks them:
