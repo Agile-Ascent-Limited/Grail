@@ -203,13 +203,17 @@ def validate_parquet_file(
 
     # Determine model name for tokenizer
     if not model_name:
-        # Try to use model name from parquet
-        model_name = parquet_model
-
-        # Fall back to default if not found
-        if not model_name:
+        # Try to use model name from parquet, but only if it looks like a valid HF repo
+        # (contains '/' like "Qwen/Qwen3-4B-Instruct-2507")
+        if parquet_model and "/" in parquet_model:
+            model_name = parquet_model
+        else:
+            # Fall back to default - parquet has local checkpoint name or is empty
             model_name = "Qwen/Qwen3-4B-Instruct-2507"  # Current GRAIL default
-            print(f"  Warning: No model name in parquet, using default: {model_name}")
+            if parquet_model:
+                print(f"  Note: Parquet model '{parquet_model}' is not a HF repo, using default: {model_name}")
+            else:
+                print(f"  Warning: No model name in parquet, using default: {model_name}")
 
     # Load tokenizer
     print(f"\nLoading tokenizer ({model_name})...")
