@@ -1,5 +1,5 @@
-// ecosystem.config.js - PM2 configuration for 8x A100 mining with HF backend
-// Each worker runs on its own GPU with HuggingFace transformers
+// ecosystem.config.js - PM2 configuration for 8x A100 mining with vLLM backend
+// Each worker runs on its own GPU with vLLM (auto-spawned server)
 //
 // LEADER-FOLLOWER PATTERN:
 //   Worker 0 (leader) starts immediately and initializes blockchain/checkpoints.
@@ -27,8 +27,8 @@ module.exports = {
         GRAIL_WORKER_ID: '0',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '0',
-        GRAIL_USE_VLLM: '0',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_MINER_SAFETY_BLOCKS: '5',  // Extra buffer before deadline (5 blocks = ~60s)
       },
@@ -49,8 +49,8 @@ module.exports = {
         GRAIL_WORKER_ID: '1',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '1',
-        GRAIL_USE_VLLM: '0',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
       },
@@ -71,8 +71,8 @@ module.exports = {
         GRAIL_WORKER_ID: '2',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '2',
-        GRAIL_USE_VLLM: '0',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
       },
@@ -93,8 +93,8 @@ module.exports = {
         GRAIL_WORKER_ID: '3',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '3',
-        GRAIL_USE_VLLM: '0',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
       },
@@ -115,8 +115,8 @@ module.exports = {
         GRAIL_WORKER_ID: '4',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '4',
-        GRAIL_USE_VLLM: '0',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
       },
@@ -137,8 +137,8 @@ module.exports = {
         GRAIL_WORKER_ID: '5',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '5',
-        GRAIL_USE_VLLM: '0',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
       },
@@ -159,8 +159,8 @@ module.exports = {
         GRAIL_WORKER_ID: '6',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '6',
-        GRAIL_USE_VLLM: '0',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
       },
@@ -181,8 +181,8 @@ module.exports = {
         GRAIL_WORKER_ID: '7',
         GRAIL_TOTAL_WORKERS: '8',
         CUDA_VISIBLE_DEVICES: '7',
-        GRAIL_USE_VLLM: '0',
-        GRAIL_USE_FLASH_ATTENTION: '1',
+        GRAIL_USE_VLLM: '1',
+        GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
       },
