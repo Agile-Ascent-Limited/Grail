@@ -444,7 +444,10 @@ def package_rollout_data(
     Returns:
         Signed dictionary ready to upload for validation
     """
-    rollout_nonce = base_nonce * 10 + rollout_idx
+    # Multiplier must be >= max batch size to avoid nonce collisions
+    # With batch_size=16, indices go 0-15, so multiplier must be at least 16
+    # Using 100 for safety margin and future batch size increases
+    rollout_nonce = base_nonce * 100 + rollout_idx
 
     # Sign commit binding (tokens, randomness, model, layer, commitments)
     from ..protocol.signatures import sign_commit_binding

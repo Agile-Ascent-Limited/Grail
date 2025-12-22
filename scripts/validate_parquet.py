@@ -5,6 +5,12 @@ Self-validation script for GRAIL parquet files.
 Reverse-engineers the validator's logic to verify rollouts will pass env_prompt_valid
 before uploading. Use this to debug multi-GPU aggregation issues.
 
+Features:
+- Validates rollout prompts match expected seeds (env_prompt_valid check)
+- Detects DUPLICATE NONCES (same rollout_group at non-contiguous file positions)
+- Detects gaps in problem indices
+- Reports rollout ordering and group statistics
+
 Usage:
     # Validate a local parquet file
     python scripts/validate_parquet.py /path/to/file.parquet
@@ -17,6 +23,16 @@ Usage:
 
     # Download from R2 and validate
     python scripts/validate_parquet.py --hotkey 5Gxxx... --window 7155540
+
+Duplicate Nonce Detection:
+    If you see "Duplicate nonce X; invalidating uid" from the validator but this
+    script says "all ok", check the "Checking for duplicate nonces" section.
+
+    Duplicate nonces occur when stale staging files from a previous window get
+    mixed with current rollouts. The script detects this by finding rollout_groups
+    that appear at non-contiguous file positions.
+
+    Fix: pm2 stop all && rm -rf ~/.cache/grail/.worker-barrier/*.json && pm2 start all
 """
 
 from __future__ import annotations
@@ -275,6 +291,79 @@ def validate_parquet_file(
         print(f"  Missing groups: {sorted(missing_groups)[:10]}{'...' if len(missing_groups) > 10 else ''}")
     else:
         print(f"  No gaps: contiguous from {unique_groups[0]} to {unique_groups[-1]}")
+
+    # Check for DUPLICATE NONCES (exact same nonce value appearing twice)
+    # This matches the validator logic in miner_validator.py:_check_inference_consistency
+    # nonce = rollout_group * MULTIPLIER + rollout_index, so each rollout should have a unique nonce
+    # NOTE: Multiplier was 10 in old code (caused collisions with batch_size>10), now 100
+    print("\nChecking for duplicate nonces (validator logic)...")
+
+    # First, show a sample of raw data to verify reading correctly
+    print("  Raw data sample (first 50 entries):")
+    for i, inf in enumerate(inferences[:50]):
+        stored_nonce = inf.get("nonce")
+        stored_group = inf.get("rollout_group")
+        stored_idx = inf.get("rollout_index")
+        print(f"    pos={i}: nonce={stored_nonce}, rollout_group={stored_group}, rollout_index={stored_idx}")
+
+    nonces_seen = {}  # nonce -> list of (file_pos, raw_data) tuples
+    for file_pos, inf in enumerate(inferences):
+        nonce = inf.get("nonce")
+        if nonce is None:
+            # Try to compute from rollout_group and rollout_index if nonce field is missing
+            group = inf.get("rollout_group", 0)
+            idx = inf.get("rollout_index", 0)
+            nonce = group * 10 + idx
+        if nonce not in nonces_seen:
+            nonces_seen[nonce] = []
+        nonces_seen[nonce].append((file_pos, {
+            "stored_nonce": inf.get("nonce"),
+            "rollout_group": inf.get("rollout_group"),
+            "rollout_index": inf.get("rollout_index"),
+            "window_start": inf.get("window_start"),
+        }))
+
+    duplicate_nonces = [(nonce, entries) for nonce, entries in nonces_seen.items() if len(entries) > 1]
+
+    if duplicate_nonces:
+        print(f"\n  ⚠️  DUPLICATE NONCES DETECTED: {len(duplicate_nonces)} nonce(s) appear multiple times!")
+        print(f"  The validator will reject this file with 'Duplicate nonce X; invalidating uid'")
+        print()
+        for nonce, entries in sorted(duplicate_nonces)[:10]:  # Show first 10
+            print(f"    nonce={nonce}: appears at {len(entries)} file positions")
+            for pos, data in entries[:3]:  # Show first 3 occurrences
+                print(f"      pos={pos}: stored_nonce={data['stored_nonce']}, "
+                      f"group={data['rollout_group']}, idx={data['rollout_index']}, "
+                      f"window={data['window_start']}")
+            if len(entries) > 3:
+                print(f"      ... and {len(entries) - 3} more")
+        if len(duplicate_nonces) > 10:
+            print(f"    ... and {len(duplicate_nonces) - 10} more duplicate nonces")
+        print()
+        # Diagnose the cause based on patterns
+        # Check if duplicates are from formula collision (different group/idx compute to same nonce)
+        formula_collision = False
+        for nonce, entries in duplicate_nonces[:5]:
+            groups = set(e[1]['rollout_group'] for e in entries)
+            if len(groups) > 1:
+                formula_collision = True
+                break
+
+        if formula_collision:
+            print("  CAUSE: Nonce formula collision! Different (group, idx) pairs compute to same nonce.")
+            print("         This happens when batch_size > 10 with old nonce formula (group*10 + idx).")
+            print("         Example: group=0,idx=10 and group=1,idx=0 both give nonce=10")
+            print()
+            print("  FIX: Update to latest code where multiplier is 100 instead of 10:")
+            print("       rollout_nonce = base_nonce * 100 + rollout_idx")
+        else:
+            print("  CAUSE: Stale staging files from a previous window got mixed in.")
+            print("  FIX: Clear staging directory and restart miners:")
+            print("    pm2 stop all")
+            print("    rm -rf ~/.cache/grail/.worker-barrier/*.json")
+            print("    pm2 start all")
+    else:
+        print(f"  ✅ No duplicate nonces detected ({len(nonces_seen)} unique nonces)")
 
     # Validate each rollout
     print("\nValidating rollouts...")
