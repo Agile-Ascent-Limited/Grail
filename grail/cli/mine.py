@@ -46,6 +46,9 @@ EMA_ALPHA = 0.2  # Exponential moving average smoothing
 MINER_SAFETY_BLOCKS = int(  # Safety margin blocks before window end
     os.getenv("GRAIL_MINER_SAFETY_BLOCKS", "3")
 )
+MINER_BUFFER_SECONDS = float(  # Extra seconds buffer for fine-tuning upload timing
+    os.getenv("GRAIL_MINER_BUFFER_SECONDS", "0")
+)
 DEBUG_TEXT_LOG_LIMIT_PER_WINDOW = 5  # Max sample texts logged per window
 
 # --------------------------------------------------------------------------- #
@@ -178,9 +181,9 @@ class MiningTimers:
             else 1.0 * self.block_time_ema_s
         )
         safety_s = float(MINER_SAFETY_BLOCKS) * self.block_time_ema_s
-        total_s = est_gen_s + est_upload_s + safety_s
-        # Cap at 2 blocks max to avoid stopping too early due to inflated gen_time_ema
-        return min(2, max(1, math.ceil(total_s / max(0.001, self.block_time_ema_s))))
+        total_s = est_gen_s + est_upload_s + safety_s + MINER_BUFFER_SECONDS
+        # Cap at 4 blocks max to avoid stopping too early due to inflated gen_time_ema
+        return min(4, max(1, math.ceil(total_s / max(0.001, self.block_time_ema_s))))
 
     def update_gen_time_ema(self, duration_s: float) -> None:
         # Cap first generation time to avoid model warmup skewing the EMA
