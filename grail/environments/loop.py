@@ -361,25 +361,30 @@ class VLLMServerBackend:
 
         batch_start = time.time()
         batch_size = len(prompt_ids_batch)
-        logger.info("vLLMServer: Starting ASYNC batch of %d prompts", batch_size)
-
-        prompts = _decode_prompts(self._tokenizer, prompt_ids_batch)
+        logger.info(
+            "vLLMServer: Starting ASYNC batch of %d prompts (using prompt_token_ids directly)",
+            batch_size,
+        )
 
         # Use configurable semaphore to control client-side concurrency
         sem = asyncio.Semaphore(self._max_concurrent_requests)
 
         async def _call_one_async(
-            idx: int, prompt: str, rnd_seed: int | None
-        ) -> tuple[int, str, list[float] | None]:
+            idx: int, prompt_ids: list[int], rnd_seed: int | None
+        ) -> tuple[int, str, list[float] | None, list[int] | None]:
+            """Send prompt token IDs directly to vLLM to avoid decode/re-encode round-trip."""
             max_retries = 3
             base_backoff = 1.0
             async with sem:
                 for attempt in range(max_retries):
                     req_start = time.time()
                     try:
+                        # CRITICAL: Use prompt_token_ids instead of decoded text
+                        # This avoids the tokenize→decode→re-tokenize round-trip which can
+                        # cause token mismatches if chat templates differ between miner and vLLM
                         completion_kwargs: dict[str, Any] = {
                             "model": self._model_name,
-                            "prompt": prompt,
+                            "prompt_token_ids": prompt_ids,  # Pass token IDs directly
                             "max_tokens": int(params.max_new_tokens),
                             "temperature": float(params.temperature),
                             "top_p": float(params.top_p),
@@ -491,9 +496,9 @@ class VLLMServerBackend:
             return (idx, "", None, None)
 
         tasks = []
-        for idx, prompt in enumerate(prompts):
+        for idx, prompt_ids in enumerate(prompt_ids_batch):
             seed_val = seeds[idx] if seeds and idx < len(seeds) else None
-            tasks.append(_call_one_async(idx, prompt, seed_val))
+            tasks.append(_call_one_async(idx, prompt_ids, seed_val))
 
         results_tuples = await asyncio.gather(*tasks, return_exceptions=False)
         completions: dict[int, str] = {}
