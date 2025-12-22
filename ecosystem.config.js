@@ -30,7 +30,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',  // Extra buffer before deadline (5 blocks = ~60s)
+        GRAIL_MINER_SAFETY_BLOCKS: '3',  // Extra buffer before deadline (3 blocks = ~36s)
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -52,7 +52,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '3',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -74,7 +74,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '3',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -96,7 +96,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '3',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -118,7 +118,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '3',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -140,7 +140,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '3',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -162,7 +162,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '3',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -184,7 +184,7 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '3',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
