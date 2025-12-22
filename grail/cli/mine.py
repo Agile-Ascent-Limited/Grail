@@ -179,7 +179,8 @@ class MiningTimers:
         )
         safety_s = float(MINER_SAFETY_BLOCKS) * self.block_time_ema_s
         total_s = est_gen_s + est_upload_s + safety_s
-        return max(1, math.ceil(total_s / max(0.001, self.block_time_ema_s)))
+        # Cap at 2 blocks max - vLLM is fast enough that we don't need more buffer
+        return min(2, max(1, math.ceil(total_s / max(0.001, self.block_time_ema_s))))
 
     def update_gen_time_ema(self, duration_s: float) -> None:
         # Cap first generation time to avoid model warmup skewing the EMA

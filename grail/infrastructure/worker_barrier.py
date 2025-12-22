@@ -549,6 +549,24 @@ class RolloutStaging:
         self.staging_dir = self.cache_root / ROLLOUT_STAGING_DIR
         self.staging_dir.mkdir(parents=True, exist_ok=True)
 
+        # Leader cleans up all stale staging files on startup to prevent
+        # duplicate nonce errors from previous runs
+        if self.is_leader:
+            self._cleanup_all_staging_files()
+
+    def _cleanup_all_staging_files(self) -> None:
+        """Leader removes all staging files on startup to prevent stale data mixing."""
+        try:
+            removed = 0
+            for f in self.staging_dir.iterdir():
+                if f.suffix in (".json", ".done", ".tmp", ".uploaded"):
+                    f.unlink()
+                    removed += 1
+            if removed > 0:
+                logger.info("Leader cleaned up %d stale staging files on startup", removed)
+        except Exception as e:
+            logger.warning("Failed to cleanup staging files: %s", e)
+
     def _get_staging_file(self, window: int, wid: int) -> Path:
         """Get path for a worker's staging file."""
         return self.staging_dir / f"window-{window}-worker-{wid}.json"
