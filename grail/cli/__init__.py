@@ -200,8 +200,12 @@ def configure_logging(verbosity: int) -> None:
     else:
         logger.info("📤  In-process log shipping mode")
 
-    # GRAIL debug details only visible with -vv or higher
-    if verbosity < 2:
+    # GRAIL debug details: check env var override, otherwise require -vv
+    grail_log_level = os.getenv("GRAIL_LOG_LEVEL", "").upper()
+    if grail_log_level == "DEBUG":
+        logging.getLogger("grail").setLevel(logging.DEBUG)
+        logger.info("🔍 GRAIL_LOG_LEVEL=DEBUG enabled")
+    elif verbosity < 2:
         logging.getLogger("grail").setLevel(logging.INFO)
 
     # Log selected network at startup

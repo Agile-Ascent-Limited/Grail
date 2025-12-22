@@ -1143,6 +1143,14 @@ class AgentEnvLoop:
         toks = self.tokenizer(rendered, return_tensors="pt", return_attention_mask=False)
         prompt_ids = toks.input_ids[0].tolist()
 
+        # Log prompt details for debugging validation mismatches
+        logger.debug(
+            "MINER RENDERED PROMPT: length=%d chars, tokens=%d, first_4_tokens=%s",
+            len(rendered),
+            len(prompt_ids),
+            prompt_ids[:4],
+        )
+
         return rendered, prompt_ids
 
     async def _generate_tokens(

@@ -7,6 +7,9 @@ import os
 import traceback
 from types import SimpleNamespace
 
+# Enable DEBUG logging for prompt length mismatch diagnosis
+os.environ.setdefault("GRAIL_LOG_LEVEL", "DEBUG")
+
 import bittensor as bt
 import torch
 
@@ -374,9 +377,24 @@ class MinerNeuron(BaseNeuron):
                                         eval_mode=True,
                                         checkpoint_window=checkpoint_window,
                                     )
-                                    tokenizer = get_tokenizer(str(checkpoint_path))
+                                    # Load tokenizer with GRAIL's custom chat template
+                                    # This ensures miner uses the same template as trainer/validator
+                                    from grail.shared.chat_templates import build_qwen_chat_template
+                                    from grail.shared.prompt_constants import SYSTEM_PROMPT
+
+                                    grail_chat_template = build_qwen_chat_template(SYSTEM_PROMPT)
+                                    tokenizer = get_tokenizer(
+                                        str(checkpoint_path),
+                                        chat_template=grail_chat_template,
+                                    )
                                     current_checkpoint_window = checkpoint_window
                                     checkpoint_changed_this_window = True
+
+                                    # Log tokenizer info for debugging prompt length mismatches
+                                    logger.info(
+                                        "[miner] ✅ Tokenizer loaded with GRAIL chat template "
+                                        "(fixes prompt length mismatch issue)"
+                                    )
 
                                     # Leader updates barrier so followers know checkpoint is ready
                                     if barrier.is_leader:
