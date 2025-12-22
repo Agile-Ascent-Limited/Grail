@@ -168,8 +168,9 @@ class MiningTimers:
         Combines gen time EMA, upload time EMA, and a safety margin (in blocks)
         to convert projected seconds into blocks remaining in the window.
         """
+        # Default gen time: 3 blocks (previously 6, which was too conservative)
         est_gen_s = (
-            self.gen_time_ema_s if self.gen_time_ema_s is not None else 6.0 * self.block_time_ema_s
+            self.gen_time_ema_s if self.gen_time_ema_s is not None else 3.0 * self.block_time_ema_s
         )
         est_upload_s = (
             self.upload_time_ema_s
@@ -181,11 +182,13 @@ class MiningTimers:
         return max(1, math.ceil(total_s / max(0.001, self.block_time_ema_s)))
 
     def update_gen_time_ema(self, duration_s: float) -> None:
-        self.gen_time_ema_s = (
-            duration_s
-            if self.gen_time_ema_s is None
-            else EMA_ALPHA * duration_s + (1.0 - EMA_ALPHA) * self.gen_time_ema_s
-        )
+        # Cap first generation time to avoid model warmup skewing the EMA
+        # First gens can take 50-60s due to CUDA/vLLM compilation, but steady state is ~25-30s
+        MAX_FIRST_GEN_S = 40.0
+        if self.gen_time_ema_s is None:
+            self.gen_time_ema_s = min(duration_s, MAX_FIRST_GEN_S)
+        else:
+            self.gen_time_ema_s = EMA_ALPHA * duration_s + (1.0 - EMA_ALPHA) * self.gen_time_ema_s
 
     def update_upload_time_ema(self, duration_s: float) -> None:
         self.upload_time_ema_s = (
@@ -601,6 +604,17 @@ async def generate_rollouts_for_window(
         logger.info("Using batch_size=%d for parallel rollout generation", batch_size)
 
     while True:
+        # Multi-worker optimization: calculate next problem for this worker
+        # without fetching current_block for each skipped problem
+        problem_count += 1
+        problem_index = max(0, problem_count - 1)
+
+        if not worker_config.should_handle_problem(problem_index):
+            # Skip this problem - another worker will handle it
+            # No RPC call needed, just continue to next iteration
+            continue
+
+        # Only fetch block when we're about to do actual work
         current_block = await subtensor.get_current_block()
         timers.update_block_time_ema(current_block)
         current_window = calculate_window_start(current_block)
@@ -626,20 +640,6 @@ async def generate_rollouts_for_window(
 
         try:
             gen_start = time.time()
-            problem_count += 1
-
-            # Multi-worker partitioning: skip problems not assigned to this worker
-            problem_index = max(0, problem_count - 1)
-            if not worker_config.should_handle_problem(problem_index):
-                # Skip this problem - another worker will handle it
-                logger.debug(
-                    "Skipping problem %d (assigned to worker %d, we are worker %d)",
-                    problem_index,
-                    problem_index % worker_config.total_workers,
-                    worker_config.worker_id,
-                )
-                await asyncio.sleep(0.001)  # Yield to event loop
-                continue
 
             worker_problem_count += 1
             inference_count += 1

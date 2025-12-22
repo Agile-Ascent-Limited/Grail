@@ -281,6 +281,9 @@ class MinerNeuron(BaseNeuron):
 
             while not self.stop_event.is_set():
                 try:
+                    # Track if checkpoint changed this iteration (for cleanup timing)
+                    checkpoint_changed_this_window = False
+
                     # Update heartbeat at start of each iteration
                     self.heartbeat()
 
@@ -352,6 +355,7 @@ class MinerNeuron(BaseNeuron):
                                     )
                                     tokenizer = get_tokenizer(str(checkpoint_path))
                                     current_checkpoint_window = checkpoint_window
+                                    checkpoint_changed_this_window = True
 
                                     # Log model configuration details
                                     if torch.cuda.is_available():
@@ -571,7 +575,10 @@ class MinerNeuron(BaseNeuron):
                             await monitor.log_counter("mining/empty_windows")
 
                     last_window_start = window_start
-                    await checkpoint_manager.cleanup_local(window_start)
+                    # Only leader should cleanup checkpoints, and only after a new
+                    # checkpoint was loaded (ensures all workers have moved to new one)
+                    if barrier.is_leader and checkpoint_changed_this_window:
+                        await checkpoint_manager.cleanup_local(window_start)
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
