@@ -661,8 +661,9 @@ class MinerNeuron(BaseNeuron):
                     last_window_start = window_start
                     # Only leader should cleanup checkpoints, and only after a new
                     # checkpoint was loaded (ensures all workers have moved to new one)
-                    if barrier.is_leader and checkpoint_changed_this_window:
-                        await checkpoint_manager.cleanup_local(window_start)
+                    # DISABLED: Keep checkpoints to avoid re-downloading base for delta reconstruction
+                    # if barrier.is_leader and checkpoint_changed_this_window:
+                    #     await checkpoint_manager.cleanup_local(window_start)
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
