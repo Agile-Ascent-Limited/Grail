@@ -389,7 +389,7 @@ async def log_generation_timing(
     blocks_remaining = (window_start + WINDOW_LENGTH) - post_gen_block
     time_remaining_s = blocks_remaining * timers.block_time_ema_s
     needed_blocks_for_upload = max(
-        3, math.ceil((timers.upload_time_ema_s or 0.0) / max(0.001, timers.block_time_ema_s))
+        5, math.ceil((timers.upload_time_ema_s or 0.0) / max(0.001, timers.block_time_ema_s))
     )
 
     generation_safe = blocks_remaining > needed_blocks_for_upload

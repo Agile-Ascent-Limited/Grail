@@ -640,7 +640,7 @@ The miner uses multiple settings to control when to stop generating and start up
 | Setting | Location | Default | Description |
 |---------|----------|---------|-------------|
 | `GRAIL_MINER_SAFETY_BLOCKS` | ecosystem.config.js | 4 | Extra blocks added to timing calculation |
-| Minimum upload blocks | mine.py:391 | 3 | Minimum blocks reserved for upload |
+| Minimum upload blocks | mine.py:391 | 5 | Minimum blocks reserved for upload |
 | Max blocks cap | mine.py:187 | 5 | Hard cap on `blocks_needed_for_next_gen()` |
 
 **How they interact:**
@@ -651,12 +651,12 @@ The miner uses multiple settings to control when to stop generating and start up
    - `GRAIL_MINER_SAFETY_BLOCKS` buffer
 2. This value is **capped at 5 blocks** to prevent over-conservative stopping
 3. When `blocks_remaining <= blocks_needed_for_next_gen`, mining stops
-4. After generation, upload timing uses `max(3, calculated_upload_blocks)` - ensuring at least 3 blocks (~36s) for upload
+4. After generation, upload timing uses `max(5, calculated_upload_blocks)` - ensuring at least 5 blocks (~60s) for upload
 
 **Effective buffer with current settings:**
 ```
 Generation stops at: 5 blocks remaining (~60s before deadline)
-Upload has: 3+ blocks reserved (~36s minimum)
+Upload has: 5+ blocks reserved (~60s minimum)
 ```
 
 **GRAIL_MINER_SAFETY_BLOCKS values:**
@@ -1056,9 +1056,10 @@ Worker 2 claims problem 2 → (slow) → claims problem 8 → ...
 Worker 3 claims problem 3 → generates → claims problem 6 → claims problem 7 → ...
 ```
 
-The file-based counter uses `fcntl.flock()` for atomic claiming. This guarantees:
+The problem queue uses **atomic file creation** (`O_CREAT|O_EXCL`) for claiming. Each problem index has a dedicated claim file - only one worker can create it. This guarantees:
 - **No gaps**: Problems 0, 1, 2, 3... are claimed sequentially
 - **Work stealing**: Faster workers naturally claim more problems
+- **Docker compatible**: Works reliably in Docker containers (unlike `fcntl.flock()`)
 - **Negligible overhead**: ~1-5ms per claim vs ~1-2s generation time (<0.5%)
 
 **Legacy fallback (if gaps still occur):**
@@ -1082,6 +1083,12 @@ Leader aggregated 1152 total rollouts from 8 workers for window 7155540 (sorted 
 ⚠️ GAP at problem 59: Truncated 160 rollouts (keeping 59 contiguous problems [0-58])
 Leader aggregated 944 total rollouts from 8 workers for window 7155540 (sorted by problem_index)
 ```
+
+**Duplicate detection (safety net):**
+```
+⚠️ DUPLICATES DETECTED: Removed 16 duplicate rollouts (kept 1136 unique)
+```
+This indicates a race condition was caught. The duplicates are removed to prevent "duplicate nonce" validation errors. Under normal operation with the atomic file claiming, this should not trigger.
 
 The truncated rollouts would have failed validation anyway, so it's better to upload fewer valid rollouts than more invalid ones.
 
