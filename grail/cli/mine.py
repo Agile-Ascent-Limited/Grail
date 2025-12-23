@@ -614,9 +614,13 @@ async def generate_rollouts_for_window(
     barrier = WorkerBarrier(cache_root, worker_config.worker_id, worker_config.total_workers)
     is_leader = worker_config.worker_id == 0
 
-    # Leader resets counter at start of each window
+    # Leader resets counter at start of each window and signals ready
+    # Followers must wait for this before claiming to prevent race condition
     if is_leader:
         problem_queue.reset_counter(window_start)
+    else:
+        # Followers wait for leader to finish reset (prevents duplicate claims)
+        problem_queue.wait_for_leader_reset(window_start, timeout=10.0)
 
     # Detect device from model (handles multi-GPU)
     device = getattr(model, "grail_primary_device", None) or model.device

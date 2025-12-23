@@ -354,6 +354,7 @@
           rm -rf ~/.cache/grail/.problem-queue/*.claim
           rm -rf ~/.cache/grail/.problem-queue/*.counter
           rm -rf ~/.cache/grail/.problem-queue/*.lock
+          rm -rf ~/.cache/grail/.problem-queue/*.ready
           rm -rf ~/.cache/grail/.rollout-staging/*
 
           # Optional: clean up vLLM cache if memory issues

@@ -947,6 +947,52 @@ class ProblemQueue:
         """Get path for a specific problem's claim file."""
         return self.queue_dir / f"window-{window}-problem-{problem_index}.claim"
 
+    def _get_ready_file(self, window: int) -> Path:
+        """Get path for window's ready marker (created by leader after reset)."""
+        return self.queue_dir / f"window-{window}.ready"
+
+    def wait_for_leader_reset(self, window: int, timeout: float = 10.0) -> bool:
+        """
+        Follower waits for leader to finish resetting claim files.
+
+        This prevents a race condition where:
+        1. Follower claims problem 0
+        2. Leader's reset_counter deletes the claim
+        3. Leader claims problem 0
+        4. Duplicates!
+
+        Args:
+            window: Window start block number
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if leader reset detected, False if timeout
+        """
+        if self.is_leader:
+            return True  # Leader doesn't wait for itself
+
+        ready_file = self._get_ready_file(window)
+        start_time = time.time()
+        poll_interval = 0.05  # 50ms
+
+        while time.time() - start_time < timeout:
+            if ready_file.exists():
+                logger.debug(
+                    "Worker %d: leader reset complete for window %d",
+                    self.worker_id,
+                    window,
+                )
+                return True
+            time.sleep(poll_interval)
+
+        # Timeout - proceed anyway (leader might have crashed)
+        logger.warning(
+            "Worker %d: timeout waiting for leader reset (window %d), proceeding",
+            self.worker_id,
+            window,
+        )
+        return False
+
     def claim_next_problem(self, window: int, max_attempts: int = 200) -> int:
         """
         Atomically claim the next problem index for a window.
@@ -1009,10 +1055,15 @@ class ProblemQueue:
 
     def reset_counter(self, window: int) -> None:
         """
-        Reset claim files for a new window.
+        Reset claim files for a new window and signal ready to followers.
 
         Leader should call this at the start of each window to clean up
-        any stale claim files from previous runs.
+        any stale claim files from previous runs. After reset, creates a
+        ready marker so followers know it's safe to start claiming.
+
+        IMPORTANT: This must complete BEFORE any follower starts claiming,
+        otherwise the leader's reset could delete a follower's claim, causing
+        duplicate problem assignments.
         """
         if not self.is_leader:
             return
@@ -1025,8 +1076,26 @@ class ProblemQueue:
                 if f.name.startswith(pattern) and f.suffix == ".claim":
                     f.unlink()
                     removed += 1
+
+            # Also remove old ready files (from previous windows)
+            for f in self.queue_dir.iterdir():
+                if f.suffix == ".ready":
+                    try:
+                        # Keep only recent ready files (last 2 windows)
+                        age = time.time() - f.stat().st_mtime
+                        if age > 300:  # 5 minutes
+                            f.unlink()
+                    except (IOError, OSError):
+                        pass
+
             if removed > 0:
                 logger.debug("Leader reset %d claim files for window %d", removed, window)
+
+            # Create ready marker so followers can start claiming
+            ready_file = self._get_ready_file(window)
+            ready_file.write_text(f"{time.time()}")
+            logger.debug("Leader signaled ready for window %d", window)
+
         except IOError as e:
             logger.warning("Failed to reset claims for window %d: %s", window, e)
 
@@ -1048,11 +1117,15 @@ class ProblemQueue:
             return 0
 
     def cleanup_window(self, window: int) -> None:
-        """Clean up claim files for a completed window."""
+        """Clean up claim and ready files for a completed window."""
         try:
             pattern = f"window-{window}-problem-"
             for f in self.queue_dir.iterdir():
                 if f.name.startswith(pattern) and f.suffix == ".claim":
                     f.unlink()
+            # Also remove the ready file
+            ready_file = self._get_ready_file(window)
+            if ready_file.exists():
+                ready_file.unlink()
         except IOError:
             pass
