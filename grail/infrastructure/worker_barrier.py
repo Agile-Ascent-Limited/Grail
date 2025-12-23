@@ -25,9 +25,11 @@ logger = logging.getLogger(__name__)
 BARRIER_DIR = ".worker-barrier"
 BARRIER_FILE = "leader-ready.json"
 RUN_ID_FILE = "run-id.txt"
+BLOCK_CACHE_FILE = "current-block.txt"  # Lightweight block sharing
 
 # How long barrier data is considered fresh (seconds)
 BARRIER_MAX_AGE = 600  # 10 minutes
+BLOCK_CACHE_MAX_AGE = 30  # Block cache stale after 30 seconds
 
 
 class WorkerBarrier:
@@ -65,6 +67,7 @@ class WorkerBarrier:
         self.barrier_dir = self.cache_root / BARRIER_DIR
         self.barrier_file = self.barrier_dir / BARRIER_FILE
         self.run_id_file = self.barrier_dir / RUN_ID_FILE
+        self.block_cache_file = self.barrier_dir / BLOCK_CACHE_FILE
 
         # Generate or read run ID
         if self.is_leader:
@@ -326,6 +329,63 @@ class WorkerBarrier:
                 data = json.load(f)
             return data.get("current_window")
         except (json.JSONDecodeError, IOError):
+            return None
+
+    def update_shared_block(self, block: int) -> None:
+        """
+        Leader updates the shared block number for followers.
+
+        This is a lightweight operation - just writes block number and timestamp
+        to a small text file. Followers read this instead of making RPC calls.
+
+        Args:
+            block: Current block number from blockchain
+        """
+        if not self.is_leader:
+            return
+
+        try:
+            # Format: "block_number timestamp"
+            content = f"{block} {time.time():.3f}"
+            # Write atomically
+            temp_file = self.block_cache_file.with_suffix(".tmp")
+            temp_file.write_text(content)
+            temp_file.rename(self.block_cache_file)
+        except IOError:
+            pass  # Non-critical
+
+    def get_shared_block(self, max_age: float = BLOCK_CACHE_MAX_AGE) -> int | None:
+        """
+        Get the shared block number from leader's cache.
+
+        Followers use this to avoid redundant blockchain RPC calls.
+        Returns None if cache is stale or unavailable.
+
+        Args:
+            max_age: Maximum age in seconds before cache is considered stale
+
+        Returns:
+            Block number if fresh cache exists, None otherwise
+        """
+        if not self.block_cache_file.exists():
+            return None
+
+        try:
+            content = self.block_cache_file.read_text().strip()
+            parts = content.split()
+            if len(parts) != 2:
+                return None
+
+            block = int(parts[0])
+            timestamp = float(parts[1])
+
+            # Check freshness
+            age = time.time() - timestamp
+            if age > max_age:
+                return None
+
+            return block
+        except (IOError, ValueError):
             return None
 
     async def wait_for_leader_window(

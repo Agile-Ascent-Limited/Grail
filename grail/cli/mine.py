@@ -21,7 +21,7 @@ from ..environments.loop import AgentEnvLoop
 from ..grail import derive_env_seed
 from ..infrastructure.comms import sink_window_inferences
 from ..infrastructure.drand import get_drand_beacon
-from ..infrastructure.worker_barrier import ProblemQueue
+from ..infrastructure.worker_barrier import ProblemQueue, WorkerBarrier
 from ..infrastructure.worker_config import WorkerConfig, log_multi_gpu_setup
 from ..shared.constants import (
     BLOCK_TIME_SECONDS,
@@ -368,6 +368,7 @@ async def log_generation_timing(
     generation_duration: float,
     rollout_count: int,
     monitor: Any | None,
+    cached_block: int | None = None,
 ) -> bool:
     """Log generation timing metrics and check if generation finished safely.
 
@@ -378,11 +379,13 @@ async def log_generation_timing(
         generation_duration: Time taken for rollout generation
         rollout_count: Number of rollouts generated
         monitor: Optional monitoring client
+        cached_block: Optional cached block number (avoids RPC call if provided)
 
     Returns:
         True if generation finished with safe buffer for upload, False otherwise
     """
-    post_gen_block = await subtensor.get_current_block()
+    # Use cached block if provided, otherwise fetch from chain
+    post_gen_block = cached_block if cached_block is not None else await subtensor.get_current_block()
     blocks_remaining = (window_start + WINDOW_LENGTH) - post_gen_block
     time_remaining_s = blocks_remaining * timers.block_time_ema_s
     needed_blocks_for_upload = max(
@@ -607,8 +610,12 @@ async def generate_rollouts_for_window(
     cache_root = worker_config.cache_root if hasattr(worker_config, 'cache_root') else os.path.expanduser("~/.cache/grail")
     problem_queue = ProblemQueue(cache_root, worker_config.worker_id)
 
+    # Initialize barrier for block sharing (leader shares block, followers read)
+    barrier = WorkerBarrier(cache_root, worker_config.worker_id, worker_config.total_workers)
+    is_leader = worker_config.worker_id == 0
+
     # Leader resets counter at start of each window
-    if worker_config.worker_id == 0:
+    if is_leader:
         problem_queue.reset_counter(window_start)
 
     # Detect device from model (handles multi-GPU)
@@ -646,7 +653,16 @@ async def generate_rollouts_for_window(
             break
 
         # Fetch current block to check timing
-        current_block = await subtensor.get_current_block()
+        # Leader fetches from chain and shares; followers read from cache
+        if is_leader:
+            current_block = await subtensor.get_current_block()
+            barrier.update_shared_block(current_block)
+        else:
+            # Try shared block first (avoids RPC call)
+            current_block = barrier.get_shared_block()
+            if current_block is None:
+                # Fallback to RPC if cache stale/missing
+                current_block = await subtensor.get_current_block()
         timers.update_block_time_ema(current_block)
         current_window = calculate_window_start(current_block)
         if current_window > window_start:
@@ -769,9 +785,10 @@ async def generate_rollouts_for_window(
                 rollout_gen_duration,
             )
 
-            # Check generation timing and log metrics
+            # Check generation timing and log metrics (use cached block to avoid RPC)
             await log_generation_timing(
-                subtensor, timers, window_start, rollout_gen_duration, len(grpo_rollouts), monitor
+                subtensor, timers, window_start, rollout_gen_duration, len(grpo_rollouts), monitor,
+                cached_block=current_block,
             )
 
             if worker_problem_count % 2 == 0:
