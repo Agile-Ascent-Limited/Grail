@@ -1179,10 +1179,30 @@ With 8x A100 80GB running the 4B model:
 
 ### Scoring Impact
 
-With the superlinear scoring formula `score = unique_rollouts^4.0`:
-- 1000 rollouts: score = 1,000,000,000,000 (10^12)
-- 2000 rollouts: score = 16,000,000,000,000 (16x more!)
-- 3000 rollouts: score = 81,000,000,000,000 (81x more!)
+**Rolling Window Period:**
+- Scoring is calculated over a **12-window rolling period** (~72 minutes)
+- `WINDOW_LENGTH = 30` blocks (~6 minutes per window)
+- `WEIGHT_SUBMISSION_INTERVAL = 360` blocks (12 × 30)
+- Weights are submitted to chain every ~72 minutes
+
+**Superlinear Scoring Formula:** `score = unique_rollouts^4.0`
+
+| Total Rollouts (12 windows) | Score | Relative |
+|-----------------------------|-------|----------|
+| 12,000 | 2.07×10^16 | 1x |
+| 24,000 | 3.32×10^17 | 16x |
+| 36,000 | 1.68×10^18 | 81x |
+
+**Impact of Missing Windows:**
+- Missing 1 window out of 12 = ~8% fewer rollouts before the ^4 exponent
+- Due to superlinear scoring, this translates to ~28% lower score
+- The validator uses extrapolation to be fair if you weren't sampled for validation
+- But if your file is late/missing, you get 0 rollouts for that window
+
+**Key Constants (from `grail/shared/constants.py` and `grail/validation/service.py`):**
+- `UNIQUE_ROLLOUTS_CAP = 5120` (per 12-window period)
+- `SUPERLINEAR_EXPONENT = 4.0`
+- Scores are normalized against `cap^exponent` for weight calculation
 
 **More workers = exponentially higher score.**
 
