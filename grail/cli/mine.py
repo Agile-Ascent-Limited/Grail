@@ -657,12 +657,16 @@ async def generate_rollouts_for_window(
         if is_leader:
             current_block = await subtensor.get_current_block()
             barrier.update_shared_block(current_block)
+            logger.debug("Leader fetched block %d from RPC, shared to cache", current_block)
         else:
             # Try shared block first (avoids RPC call)
             current_block = barrier.get_shared_block()
-            if current_block is None:
+            if current_block is not None:
+                logger.debug("Worker %d using cached block %d (saved RPC call)", worker_config.worker_id, current_block)
+            else:
                 # Fallback to RPC if cache stale/missing
                 current_block = await subtensor.get_current_block()
+                logger.debug("Worker %d cache miss, fetched block %d from RPC", worker_config.worker_id, current_block)
         timers.update_block_time_ema(current_block)
         current_window = calculate_window_start(current_block)
         if current_window > window_start:
