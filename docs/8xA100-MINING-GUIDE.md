@@ -49,6 +49,11 @@ The barrier file is stored at `~/.cache/grail/.worker-barrier/leader-ready.json`
 # CUDA drivers (should be pre-installed on cloud instances)
 nvidia-smi  # Verify GPUs are visible
 
+# Tested configuration (2448+ rollouts achieved):
+#   Driver: 570.172.08
+#   CUDA: 12.8
+#   GPUs: 8x NVIDIA A100-SXM4-80GB
+
 # Git
 sudo apt-get install -y git
 
