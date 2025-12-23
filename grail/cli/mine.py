@@ -183,8 +183,8 @@ class MiningTimers:
         )
         safety_s = float(MINER_SAFETY_BLOCKS) * self.block_time_ema_s
         total_s = est_gen_s + est_upload_s + safety_s + MINER_BUFFER_SECONDS
-        # Cap at 4 blocks max to avoid stopping too early due to inflated gen_time_ema
-        return min(4, max(1, math.ceil(total_s / max(0.001, self.block_time_ema_s))))
+        # Cap at 5 blocks max to avoid stopping too early due to inflated gen_time_ema
+        return min(5, max(1, math.ceil(total_s / max(0.001, self.block_time_ema_s))))
 
     def update_gen_time_ema(self, duration_s: float) -> None:
         # Cap first generation time to avoid model warmup skewing the EMA
