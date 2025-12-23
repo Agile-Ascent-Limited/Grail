@@ -1,0 +1,400 @@
+- hosts: all
+  become: true
+  serial: 10 # run one at a time to avoid rate limiting
+
+#### Log Monitor for GRAIL (SN81) - 8x A100 vLLM Mining ###
+
+  tasks:
+    - name: Create log monitor script
+      ansible.builtin.copy:
+        dest: /root/Grail/loghealthmonitor.sh
+        mode: "0755"
+        owner: root
+        group: root
+        content: |
+          #!/usr/bin/env bash
+          #
+          # GRAIL (SN81) miner watchdog for 8x A100 vLLM mining
+          #   - Monitors all 8 worker logs + vLLM server logs
+          #   - Pattern matching for critical errors
+          #   - Idle detection (no activity for 15 min)
+          #   - Email notifications with restart capability
+          # ------------------------------------------------------------------------------
+
+          #### Ansible-injected identifiers ####
+          server_name={{ inventory_hostname }}
+          server_ip={{ ansible_host }}
+
+          ########## paths ##########
+          LOG_DIR="/var/log/grail"
+          PM2_LOG_DIR="/root/.pm2/logs"
+          CMD="/root/Grail/pm2cmd.sh"
+
+          # Primary log (leader worker-0)
+          LOG_LEADER="$LOG_DIR/worker-0-out.log"
+          LOG_LEADER_ERR="$LOG_DIR/worker-0-error.log"
+
+          # vLLM logs (if running as separate process)
+          VLLM_LOG="$PM2_LOG_DIR/vllm-server-out.log"
+          VLLM_ERR="$PM2_LOG_DIR/vllm-server-error.log"
+
+          ########## Critical patterns - trigger restart ##########
+          PATTERNS_CRITICAL=(
+            "CUDA out of memory"
+            "OutOfMemoryError"
+            "RuntimeError: CUDA"
+            "torch.cuda.OutOfMemoryError"
+            "GPU memory allocation failed"
+            "NCCL error"
+            "NCCL timeout"
+          )
+
+          ########## vLLM specific patterns ##########
+          PATTERNS_VLLM=(
+            "CUDA out of memory"
+            "OutOfMemoryError"
+            "vLLM engine crashed"
+            "Server failed to start"
+            "RuntimeError: CUDA"
+            "GPU memory allocation failed"
+          )
+
+          ########## Disk/Storage patterns ##########
+          PATTERNS_DISK=(
+            "No space left on device"
+            "Not enough free disk space"
+            "OSError: [Errno 28]"
+            "Disk quota exceeded"
+          )
+
+          ########## Upload/Network patterns - email only ##########
+          PATTERNS_UPLOAD=(
+            "Upload failed after"
+            "Connection refused"
+            "Connection timed out"
+            "R2 upload error"
+          )
+
+          ########## Validation patterns - email only (info) ##########
+          PATTERNS_VALIDATION=(
+            "env_prompt_valid = False"
+            "Duplicate nonce"
+            "GAP at problem"
+          )
+
+          ########## idle-watch settings ##########
+          INACTIVE=900        # 15 min
+          CHECK_EVERY=30      # poll interval
+
+          ################################################################################
+          # Helper: e-mail notifier
+          ################################################################################
+          send_email() {                     # $1 = trigger reason  $2 = tail snippet
+            python3 - "$1" "$2" "$server_name" "$server_ip" <<'PY'
+          import sys, smtplib
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
+
+          reason, tail_snippet, server_name, server_ip = sys.argv[1:]
+
+          smtp_user = 'agileascent.ie'
+          smtp_pass = 'WwNoYcZsM1Ronl54'
+          sender    = 'grailwatchdog@agileascent.ie'
+          receiver  = 'shane@agileascent.ie'
+
+          msg = MIMEMultipart()
+          msg['Subject'] = f"[GRAIL {server_name}] Watchdog triggered"
+          msg['From']    = sender
+          msg['To']      = receiver
+          msg.attach(MIMEText(
+              f"Server   : {server_name} ({server_ip})\n"
+              f"Subnet   : SN81 (GRAIL)\n"
+              f"Reason   : {reason}\n\n"
+              "===== last 20 lines =====\n\n"
+              f"{tail_snippet}", 'plain'))
+          with smtplib.SMTP('mail.smtp2go.com', 2525) as s:
+              s.starttls()
+              s.login(smtp_user, smtp_pass)
+              s.sendmail(sender, receiver, msg.as_string())
+          PY
+          }
+
+          ################################################################################
+          # Helper: pattern list monitor
+          ################################################################################
+          monitor_patterns() {               # $1=tag  $2=file  $@=patterns
+            local tag="$1" file="$2"; shift 2
+
+            # Skip if file doesn't exist
+            [[ ! -f "$file" ]] && {
+              echo "[$(date +'%F %T')] [$tag] File not found: $file - skipping"
+              sleep infinity
+              return
+            }
+
+            local tmp; tmp=$(mktemp)
+            printf '%s\n' "$@" >"$tmp"
+
+            echo "[$(date +'%F %T')] [$tag] watching $file for: $*"
+            tail -n0 -F "$file" 2>/dev/null | \
+              grep --line-buffered -F -m1 -f "$tmp" | \
+              while IFS= read -r line; do
+                echo "[$(date +'%F %T')] [$tag] matched: $line"
+                rm -f "$tmp"
+                exit 0
+              done
+          }
+
+          ################################################################################
+          # Helper: multi-file pattern monitor (watches all worker logs)
+          ################################################################################
+          monitor_all_workers() {            # $1=tag  $@=patterns
+            local tag="$1"; shift
+            local tmp; tmp=$(mktemp)
+            printf '%s\n' "$@" >"$tmp"
+
+            echo "[$(date +'%F %T')] [$tag] watching all worker logs for: $*"
+
+            # Watch all worker error logs
+            tail -n0 -F "$LOG_DIR"/worker-*-error.log 2>/dev/null | \
+              grep --line-buffered -F -m1 -f "$tmp" | \
+              while IFS= read -r line; do
+                echo "[$(date +'%F %T')] [$tag] matched: $line"
+                rm -f "$tmp"
+                exit 0
+              done
+          }
+
+          ################################################################################
+          # Helper: idle timer (watches leader log for activity)
+          ################################################################################
+          monitor_idle() {
+              echo "[$(date +'%F %T')] [IDLE] watching $LOG_LEADER idle >= $((INACTIVE/60)) min"
+
+              local ts_file; ts_file=$(mktemp)
+              printf '%s\n' "$(date +%s)" > "$ts_file"
+
+              # Background: tail the log; update timestamp on significant lines
+              tail -n0 -F "$LOG_LEADER" 2>/dev/null | \
+              while IFS= read -r line; do
+                  # Skip heartbeat/status messages
+                  [[ "$line" == *"blocks remaining"* ]] && continue
+                  [[ "$line" == *"Waiting for"* ]] && continue
+                  printf '%s\n' "$(date +%s)" >> "$ts_file"
+              done & tail_pid=$!
+
+              trap 'rm -f "$ts_file"; kill "$tail_pid" 2>/dev/null' EXIT
+
+              while :; do
+                  now=$(date +%s)
+                  if last=$(tail -n 1 "$ts_file" 2>/dev/null); then
+                      [[ -z "$last" || ! "$last" =~ ^[0-9]+$ ]] && last=$now
+                  else
+                      last=$now
+                  fi
+
+                  idle=$(( now - last ))
+                  printf "[%s] [IDLE] current idle = %ds\n" "$(date +'%F %T')" "$idle" >&2
+
+                  if (( idle >= INACTIVE )); then
+                      echo "[$(date +'%F %T')] [IDLE] threshold hit" >&2
+                      exit 0
+                  fi
+                  sleep "$CHECK_EVERY"
+              done
+          }
+
+          ################################################################################
+          # Helper: PM2 process health check
+          ################################################################################
+          monitor_pm2_health() {
+              echo "[$(date +'%F %T')] [PM2] Monitoring PM2 process health every 60s"
+
+              while :; do
+                  sleep 60
+
+                  # Check if any grail-miner processes are in error state
+                  if pm2 jlist 2>/dev/null | python3 -c "
+          import sys, json
+          procs = json.load(sys.stdin)
+          errors = [p['name'] for p in procs if 'grail-miner' in p['name'] and p['pm2_env']['status'] != 'online']
+          if errors:
+              print('STOPPED: ' + ', '.join(errors))
+              sys.exit(0)
+          sys.exit(1)
+          " 2>/dev/null; then
+                      echo "[$(date +'%F %T')] [PM2] Detected stopped/errored miners"
+                      exit 0
+                  fi
+              done
+          }
+
+          ################################################################################
+          # Helper: GPU utilization check
+          ################################################################################
+          monitor_gpu_util() {
+              echo "[$(date +'%F %T')] [GPU] Monitoring GPU utilization (alert if all GPUs < 10% for 5 min)"
+
+              local low_util_count=0
+              local threshold=10  # GPU util threshold
+              local max_low=10    # 10 checks * 30s = 5 min
+
+              while :; do
+                  sleep 30
+
+                  # Get average GPU utilization across all GPUs
+                  avg_util=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | \
+                    awk '{ sum += $1; count++ } END { if(count>0) print sum/count; else print 0 }')
+
+                  if (( $(echo "$avg_util < $threshold" | bc -l) )); then
+                      ((low_util_count++))
+                      echo "[$(date +'%F %T')] [GPU] Low utilization: ${avg_util}% (count: $low_util_count/$max_low)"
+
+                      if (( low_util_count >= max_low )); then
+                          echo "[$(date +'%F %T')] [GPU] Sustained low GPU utilization detected"
+                          exit 0
+                      fi
+                  else
+                      low_util_count=0
+                  fi
+              done
+          }
+
+          ################################################################################
+          # Launch monitors
+          ################################################################################
+          # Critical errors in all worker logs
+          monitor_all_workers "CRITICAL" "${PATTERNS_CRITICAL[@]}" & pid_crit=$!
+
+          # Disk errors in leader log
+          monitor_patterns "DISK" "$LOG_LEADER_ERR" "${PATTERNS_DISK[@]}" & pid_disk=$!
+
+          # vLLM errors (if vLLM log exists)
+          monitor_patterns "VLLM" "$VLLM_ERR" "${PATTERNS_VLLM[@]}" & pid_vllm=$!
+
+          # Idle detection on leader
+          monitor_idle & pid_idle=$!
+
+          # PM2 health monitoring
+          monitor_pm2_health & pid_pm2=$!
+
+          # GPU utilization monitoring
+          monitor_gpu_util & pid_gpu=$!
+
+          echo "[$(date +'%F %T')] GRAIL monitors started (PIDs: crit=$pid_crit disk=$pid_disk vllm=$pid_vllm idle=$pid_idle pm2=$pid_pm2 gpu=$pid_gpu)"
+
+          ################################################################################
+          # First one to exit wins
+          ################################################################################
+          wait -n "$pid_crit" "$pid_disk" "$pid_vllm" "$pid_idle" "$pid_pm2" "$pid_gpu"
+
+          # Identify which watcher triggered
+          if   ! kill -0 "$pid_crit" 2>/dev/null; then
+            reason="Critical error in worker logs (CUDA/OOM/NCCL)"
+            tail_snip=$(tail -n 20 "$LOG_DIR"/worker-*-error.log 2>/dev/null | head -60)
+          elif ! kill -0 "$pid_disk" 2>/dev/null; then
+            reason="Disk space error"
+            tail_snip=$(tail -n 20 "$LOG_LEADER_ERR" 2>/dev/null)
+          elif ! kill -0 "$pid_vllm" 2>/dev/null; then
+            reason="vLLM server error"
+            tail_snip=$(tail -n 20 "$VLLM_ERR" 2>/dev/null)
+          elif ! kill -0 "$pid_idle" 2>/dev/null; then
+            reason="Leader log idle >= ${INACTIVE}s"
+            tail_snip=$(tail -n 20 "$LOG_LEADER" 2>/dev/null)
+          elif ! kill -0 "$pid_pm2" 2>/dev/null; then
+            reason="PM2 process stopped/errored"
+            tail_snip=$(pm2 status 2>/dev/null)
+          elif ! kill -0 "$pid_gpu" 2>/dev/null; then
+            reason="Sustained low GPU utilization (all GPUs < 10% for 5 min)"
+            tail_snip=$(nvidia-smi 2>/dev/null)
+          else
+            reason="Unknown (PID vanished)"
+            tail_snip="No tail snippet available"
+          fi
+
+          echo "[$(date +'%F %T')] Condition met: $reason"
+
+          # Stop remaining watchers
+          kill "$pid_crit" "$pid_disk" "$pid_vllm" "$pid_idle" "$pid_pm2" "$pid_gpu" 2>/dev/null || true
+
+          # Send email notification
+          send_email "$reason" "$tail_snip"
+
+          ################################################################################
+          # Restart miners
+          ################################################################################
+          echo "[$(date +'%F %T')] Restarting GRAIL miners..."
+          cd /root/Grail || exit 1
+
+          # Restart all PM2 processes
+          pm2 restart all
+
+          echo "[$(date +'%F %T')] Restart complete - sleeping 120s before resuming monitoring"
+          sleep 120
+
+      register: loghealthmonitor_script
+
+    - name: Create PM2 restart command script
+      ansible.builtin.copy:
+        dest: /root/Grail/pm2cmd.sh
+        mode: "0755"
+        owner: root
+        group: root
+        content: |
+          #!/usr/bin/env bash
+          # GRAIL PM2 restart script
+
+          echo "[$(date +'%F %T')] Stopping all GRAIL miners..."
+          pm2 stop all
+
+          # Clean up stale barrier files, problem queue claims, and rollout staging
+          echo "[$(date +'%F %T')] Cleaning up barrier, queue, and staging files..."
+          rm -rf ~/.cache/grail/.worker-barrier/*.json
+          rm -rf ~/.cache/grail/.worker-barrier/*.tmp
+          rm -rf ~/.cache/grail/.problem-queue/*.claim
+          rm -rf ~/.cache/grail/.problem-queue/*.counter
+          rm -rf ~/.cache/grail/.problem-queue/*.lock
+          rm -rf ~/.cache/grail/.rollout-staging/*
+
+          # Optional: clean up vLLM cache if memory issues
+          # rm -rf ~/.cache/vllm/*
+
+          echo "[$(date +'%F %T')] Starting all GRAIL miners..."
+          cd /root/Grail
+          pm2 start ecosystem.config.js
+
+          echo "[$(date +'%F %T')] Miners restarted. Status:"
+          pm2 status
+
+    # Check whether "grail-logmonitor" is already registered in PM2
+    - name: Query PM2 for grail-logmonitor
+      ansible.builtin.command: pm2 describe grail-logmonitor
+      register: pm2_info
+      failed_when: false
+      changed_when: false
+
+    - name: Start PM2 process "grail-logmonitor"
+      ansible.builtin.shell: |
+          pm2 start /root/Grail/loghealthmonitor.sh \
+              --name grail-logmonitor --update-env
+      args:
+          chdir: /root/Grail
+          executable: /bin/bash
+      when: pm2_info.rc != 0
+      register: pm2_start
+      changed_when: "'online' in pm2_start.stdout"
+      tags:
+          - logstart
+
+    # Restart only if the process exists
+    - name: Restart PM2 process "grail-logmonitor"
+      ansible.builtin.command: pm2 restart grail-logmonitor
+      when: pm2_info.rc == 0
+      register: pm2_restart
+      changed_when: "'online' in pm2_restart.stdout"
+      tags:
+          - logrestart
+
+    - name: Save PM2 process list
+      ansible.builtin.command: pm2 save
+      changed_when: false

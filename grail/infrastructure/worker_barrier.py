@@ -10,7 +10,6 @@ Also provides ProblemQueue for gap-free problem distribution across workers.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import logging
 import os
@@ -746,6 +745,7 @@ class RolloutStaging:
         Returns:
             Combined list of rollouts from all workers, sorted by problem_index
             to ensure file position matches validator's group_index expectation.
+            Duplicates are detected and removed to prevent nonce collisions.
         """
         if not self.is_leader:
             return []
@@ -759,6 +759,30 @@ class RolloutStaging:
                     "Aggregated %d rollouts from worker %d for window %d",
                     len(rollouts), wid, window,
                 )
+
+        # SAFETY NET: Deduplicate by (rollout_group, rollout_index) to prevent duplicate nonces.
+        # This catches any edge cases where the same problem was processed twice (e.g., due to
+        # file locking issues in Docker, race conditions, or stale staging files).
+        if all_rollouts:
+            seen_keys: set[tuple[int, int]] = set()
+            unique_rollouts = []
+            duplicate_count = 0
+
+            for r in all_rollouts:
+                key = (r.get("rollout_group", 0), r.get("rollout_index", 0))
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    unique_rollouts.append(r)
+                else:
+                    duplicate_count += 1
+
+            if duplicate_count > 0:
+                logger.warning(
+                    "⚠️ DUPLICATES DETECTED: Removed %d duplicate rollouts (kept %d unique)",
+                    duplicate_count,
+                    len(unique_rollouts),
+                )
+            all_rollouts = unique_rollouts
 
         # CRITICAL: Sort by problem_index (rollout_group) to match validator expectations.
         # Validator uses file position as group_index for seed derivation.
@@ -865,6 +889,9 @@ class ProblemQueue:
     - Faster workers naturally do more problems (work stealing)
     - Overhead is negligible (~1-5ms per claim vs ~1-2s generation time)
 
+    NOTE: Uses atomic file creation (O_CREAT|O_EXCL) instead of fcntl.flock()
+    because flock doesn't work reliably in Docker containers.
+
     Usage:
         queue = ProblemQueue(cache_root, worker_id)
         while mining:
@@ -894,12 +921,12 @@ class ProblemQueue:
             self._cleanup_stale_counters()
 
     def _cleanup_stale_counters(self) -> None:
-        """Leader removes old counter files on startup."""
+        """Leader removes old counter/claim files on startup."""
         try:
             removed = 0
             for f in self.queue_dir.iterdir():
-                if f.suffix in (".counter", ".lock"):
-                    # Remove counters older than 10 minutes
+                if f.suffix in (".counter", ".lock", ".claim"):
+                    # Remove files older than 10 minutes
                     try:
                         age = time.time() - f.stat().st_mtime
                         if age > 600:
@@ -916,103 +943,116 @@ class ProblemQueue:
         """Get path for window's problem counter file."""
         return self.queue_dir / f"window-{window}.counter"
 
-    def _get_lock_file(self, window: int) -> Path:
-        """Get path for window's lock file."""
-        return self.queue_dir / f"window-{window}.lock"
+    def _get_claim_file(self, window: int, problem_index: int) -> Path:
+        """Get path for a specific problem's claim file."""
+        return self.queue_dir / f"window-{window}-problem-{problem_index}.claim"
 
-    def claim_next_problem(self, window: int) -> int:
+    def claim_next_problem(self, window: int, max_attempts: int = 200) -> int:
         """
         Atomically claim the next problem index for a window.
 
-        Uses file locking to ensure only one worker claims each index.
-        This guarantees contiguous problem indices with no gaps.
+        Uses atomic file creation (O_CREAT|O_EXCL) to ensure only one worker
+        claims each index. This works reliably in Docker containers unlike
+        fcntl.flock().
 
         Args:
             window: Window start block number
+            max_attempts: Maximum problem index to try (prevents infinite loop)
 
         Returns:
             The claimed problem index (0, 1, 2, ...), or -1 on error
         """
-        counter_file = self._get_counter_file(window)
-        lock_file = self._get_lock_file(window)
+        # Try to claim indices starting from 0
+        # Each worker tries to create claim files atomically
+        for problem_index in range(max_attempts):
+            claim_file = self._get_claim_file(window, problem_index)
 
-        try:
-            # Open/create lock file
-            with open(lock_file, "w") as lf:
-                # Acquire exclusive lock (blocks until available)
-                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            try:
+                # Atomic file creation - fails if file already exists
+                # O_CREAT | O_EXCL ensures only one process succeeds
+                fd = os.open(
+                    str(claim_file),
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o644,
+                )
+                # Write our worker ID to the claim file
+                os.write(fd, f"{self.worker_id}:{time.time()}".encode())
+                os.close(fd)
 
-                try:
-                    # Read current counter
-                    if counter_file.exists():
-                        current = int(counter_file.read_text().strip())
-                    else:
-                        current = 0
+                logger.debug(
+                    "Worker %d claimed problem %d for window %d",
+                    self.worker_id,
+                    problem_index,
+                    window,
+                )
+                return problem_index
 
-                    # Write incremented counter
-                    counter_file.write_text(str(current + 1))
+            except FileExistsError:
+                # Another worker already claimed this index, try next
+                continue
+            except Exception as e:
+                logger.error(
+                    "Failed to claim problem %d for window %d: %s",
+                    problem_index,
+                    window,
+                    e,
+                )
+                return -1
 
-                    logger.debug(
-                        "Worker %d claimed problem %d for window %d",
-                        self.worker_id,
-                        current,
-                        window,
-                    )
-
-                    return current
-
-                finally:
-                    # Release lock
-                    fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-
-        except Exception as e:
-            logger.error("Failed to claim problem for window %d: %s", window, e)
-            return -1
+        logger.warning(
+            "Worker %d: no claimable problems in window %d (tried %d indices)",
+            self.worker_id,
+            window,
+            max_attempts,
+        )
+        return -1
 
     def reset_counter(self, window: int) -> None:
         """
-        Reset counter for a new window.
+        Reset claim files for a new window.
 
-        Leader should call this at the start of each window.
+        Leader should call this at the start of each window to clean up
+        any stale claim files from previous runs.
         """
         if not self.is_leader:
             return
 
-        counter_file = self._get_counter_file(window)
-        lock_file = self._get_lock_file(window)
-
         try:
-            # Remove old counter file if exists
-            if counter_file.exists():
-                counter_file.unlink()
-            if lock_file.exists():
-                lock_file.unlink()
-            logger.debug("Leader reset problem counter for window %d", window)
+            # Remove all claim files for this window
+            removed = 0
+            pattern = f"window-{window}-problem-"
+            for f in self.queue_dir.iterdir():
+                if f.name.startswith(pattern) and f.suffix == ".claim":
+                    f.unlink()
+                    removed += 1
+            if removed > 0:
+                logger.debug("Leader reset %d claim files for window %d", removed, window)
         except IOError as e:
-            logger.warning("Failed to reset counter for window %d: %s", window, e)
+            logger.warning("Failed to reset claims for window %d: %s", window, e)
 
     def get_current_count(self, window: int) -> int:
         """
-        Get current problem count for a window (non-locking read).
+        Get current problem count for a window (count claim files).
 
         Useful for monitoring/logging.
         """
-        counter_file = self._get_counter_file(window)
         try:
-            if counter_file.exists():
-                return int(counter_file.read_text().strip())
-            return 0
+            pattern = f"window-{window}-problem-"
+            count = sum(
+                1
+                for f in self.queue_dir.iterdir()
+                if f.name.startswith(pattern) and f.suffix == ".claim"
+            )
+            return count
         except (IOError, ValueError):
             return 0
 
     def cleanup_window(self, window: int) -> None:
-        """Clean up counter files for a completed window."""
+        """Clean up claim files for a completed window."""
         try:
-            counter_file = self._get_counter_file(window)
-            lock_file = self._get_lock_file(window)
-            if counter_file.exists():
-                counter_file.unlink()
-            if lock_file.exists():
-                lock_file.unlink()
+            pattern = f"window-{window}-problem-"
+            for f in self.queue_dir.iterdir():
+                if f.name.startswith(pattern) and f.suffix == ".claim":
+                    f.unlink()
         except IOError:
             pass
