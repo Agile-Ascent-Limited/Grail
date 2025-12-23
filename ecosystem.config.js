@@ -17,7 +17,7 @@ module.exports = {
     {
       name: 'grail-miner-0',
       script: '.venv/bin/grail',
-      args: '-vv mine',
+      args: 'mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -39,7 +39,7 @@ module.exports = {
     {
       name: 'grail-miner-1',
       script: '.venv/bin/grail',
-      args: '-vv mine',
+      args: 'mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -61,7 +61,7 @@ module.exports = {
     {
       name: 'grail-miner-2',
       script: '.venv/bin/grail',
-      args: '-vv mine',
+      args: 'mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -83,7 +83,7 @@ module.exports = {
     {
       name: 'grail-miner-3',
       script: '.venv/bin/grail',
-      args: '-vv mine',
+      args: 'mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -105,7 +105,7 @@ module.exports = {
     {
       name: 'grail-miner-4',
       script: '.venv/bin/grail',
-      args: '-vv mine',
+      args: 'mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -127,7 +127,7 @@ module.exports = {
     {
       name: 'grail-miner-5',
       script: '.venv/bin/grail',
-      args: '-vv mine',
+      args: 'mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -149,7 +149,7 @@ module.exports = {
     {
       name: 'grail-miner-6',
       script: '.venv/bin/grail',
-      args: '-vv mine',
+      args: 'mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -171,7 +171,7 @@ module.exports = {
     {
       name: 'grail-miner-7',
       script: '.venv/bin/grail',
-      args: '-vv mine',
+      args: 'mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {

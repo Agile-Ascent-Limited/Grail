@@ -53,6 +53,9 @@ nvidia-smi  # Verify GPUs are visible
 #   Driver: 570.172.08
 #   CUDA: 12.8
 #   GPUs: 8x NVIDIA A100-SXM4-80GB
+#
+# Tested VM Template (Lium):
+#   Image: daturaai/pytorch - 2.1.1-py3.10-cuda12.1.1-devel-ubuntu22.04
 
 # Git
 sudo apt-get install -y git
