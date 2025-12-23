@@ -820,21 +820,23 @@ pm2 start all
 
 **Prevention:** The barrier system now includes automatic cleanup on leader startup, so this should not occur with current code.
 
-**7. Gap Truncation (Rollouts Discarded)**
+**7. Gap Truncation (Rollouts Discarded) - Rare with Current Code**
 
 If you see logs like:
 ```
 ⚠️ GAP at problem 129: Truncated 320 rollouts
 ```
 
-**Cause:** With round-robin problem distribution (worker 0 handles problems 0,8,16...; worker 1 handles 1,9,17...; etc.), if one worker doesn't complete its assigned problem before the window ends, there's a gap in the problem indices.
+**Note:** With the current shared problem queue, this should be **very rare**. The queue ensures problems are claimed sequentially (0, 1, 2, 3...) so gaps only occur if:
+- A worker crashes mid-generation (problem claimed but not completed)
+- Filesystem issues with the counter file in `~/.cache/grail/.problem-queue/`
 
 **Why it matters:** The validator requires contiguous problem indices. A gap at problem 129 means all rollouts for problems 130+ would fail validation anyway, so they're discarded.
 
-**Solutions:**
-- Ensure all workers have similar generation speeds (same GPU types)
-- Reduce `GRAIL_MINER_SAFETY_BLOCKS` so workers stop at more similar times
-- With well-tuned settings, gaps should affect <5% of windows
+**If you see frequent gaps:**
+1. Check for worker crashes in PM2: `pm2 logs | grep -E "error|crash"`
+2. Verify the problem queue directory exists: `ls -la ~/.cache/grail/.problem-queue/`
+3. Check for stale lock files: `ls -la ~/.cache/grail/.problem-queue/*.lock`
 
 **8. Duplicate Nonce Error with Batch Size > 10 (Formula Collision)**
 
@@ -990,21 +992,20 @@ If they don't match → `env_prompt_valid = False` ✗
 
 ### Why File Order Matters (Multi-GPU)
 
-With multiple workers, problems are distributed round-robin:
-- Worker 0 handles: 0, 8, 16, 24, 32...
-- Worker 1 handles: 1, 9, 17, 25, 33...
-- Worker 2 handles: 2, 10, 18, 26, 34...
-- etc.
+With multiple workers using the **shared problem queue**, problems are claimed dynamically:
+- Workers atomically claim the next available problem from a shared counter
+- Faster workers naturally claim more problems (work stealing)
+- Problems are always claimed sequentially: 0, 1, 2, 3, 4...
 
-**Without sorting**, rollouts would be uploaded in worker order:
+Example with 4 workers:
 ```
-File position 0 → problem 0 (worker 0)  ✓ validator uses group_index=0
-File position 1 → problem 8 (worker 0)  ✗ validator uses group_index=1, but seed was for problem 8!
-File position 2 → problem 16 (worker 0) ✗ validator uses group_index=2, but seed was for problem 16!
-...
+Worker 0 claims: 0, 4, 8, 11...  (fast GPU)
+Worker 1 claims: 1, 5, 9...      (normal speed)
+Worker 2 claims: 2, 6, 10...     (normal speed)
+Worker 3 claims: 3, 7...         (slow GPU)
 ```
 
-**With sorting by problem_index**, rollouts are in correct order:
+The leader aggregates all rollouts and **sorts by problem_index** before upload:
 ```
 File position 0 → problem 0  ✓ validator uses group_index=0
 File position 1 → problem 1  ✓ validator uses group_index=1
@@ -1012,22 +1013,28 @@ File position 2 → problem 2  ✓ validator uses group_index=2
 ...
 ```
 
-### Gap Handling
+This ensures the validator's file-position-based indexing matches the miner's seed derivation.
 
-If a worker doesn't finish a problem before the window ends, there's a **gap** in the problem indices:
+### Gap-Free Problem Distribution
 
+The miner uses a **shared problem queue** for gap-free distribution across workers. Instead of pre-assigning problems round-robin (which causes gaps when workers finish at different speeds), workers atomically claim the next available problem from a shared counter.
+
+**How it works:**
 ```
-Problems completed: 0, 1, 2, 3, 4, 6, 7, 8...  (missing 5!)
+Worker 0 claims problem 0 → generates → claims problem 4 → ...
+Worker 1 claims problem 1 → generates → claims problem 5 → ...
+Worker 2 claims problem 2 → (slow) → claims problem 8 → ...
+Worker 3 claims problem 3 → generates → claims problem 6 → claims problem 7 → ...
 ```
 
-Without gap handling:
-```
-File position 5 → problem 6  ✗ validator expects problem 5's prompt!
-File position 6 → problem 7  ✗ validator expects problem 6's prompt!
-...all subsequent rollouts fail
-```
+The file-based counter uses `fcntl.flock()` for atomic claiming. This guarantees:
+- **No gaps**: Problems 0, 1, 2, 3... are claimed sequentially
+- **Work stealing**: Faster workers naturally claim more problems
+- **Negligible overhead**: ~1-5ms per claim vs ~1-2s generation time (<0.5%)
 
-The miner automatically **truncates at the first gap**, keeping only contiguous problems:
+**Legacy fallback (if gaps still occur):**
+
+If gaps occur (e.g., due to crashes or external issues), the miner automatically **truncates at the first gap**, keeping only contiguous problems:
 ```
 File positions 0-4 → problems 0-4 (all pass validation)
 Problems 6+ are dropped (would fail anyway)
@@ -1049,15 +1056,20 @@ Leader aggregated 944 total rollouts from 8 workers for window 7155540 (sorted b
 
 The truncated rollouts would have failed validation anyway, so it's better to upload fewer valid rollouts than more invalid ones.
 
-### Minimizing Gaps
+### Why Gaps Are Eliminated
 
-Gaps occur when one worker finishes fewer problems than others. To minimize:
+With the shared problem queue, gaps are effectively eliminated because:
 
-1. **Use similar GPUs**: Mixed GPU types (e.g., A100 + H100) cause timing differences
-2. **Increase safety margin**: Set `GRAIL_MINER_SAFETY_BLOCKS=4` (default 3) to stop generation earlier
-3. **Balance workload**: Ensure all workers have similar generation speeds
+1. **Sequential claiming**: Problems are claimed in order (0, 1, 2, 3...) regardless of which worker claims them
+2. **No pre-assignment**: Workers don't have "assigned" problems that might not get completed
+3. **Work stealing**: Faster workers claim more problems, but the sequence is always contiguous
 
-With well-balanced workers, gaps should be rare (< 5% of windows).
+**When gaps might still occur:**
+- Worker crashes mid-generation (problem claimed but never completed)
+- Filesystem issues with the counter file
+- External interruption during a window
+
+In these rare cases, the truncation fallback kicks in. But under normal operation, you should see "✅ No gaps" in every window.
 
 ### Local Parquet Saving
 

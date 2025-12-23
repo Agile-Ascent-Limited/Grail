@@ -3,11 +3,14 @@ Worker barrier for leader-follower synchronization in multi-GPU mining.
 
 Worker 0 (leader) does initialization (blockchain, checkpoint download) and signals ready.
 Workers 1-7 (followers) wait for leader, then proceed with mining only.
+
+Also provides ProblemQueue for gap-free problem distribution across workers.
 """
 
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import logging
 import os
@@ -778,5 +781,178 @@ class RolloutStaging:
             uploaded_file = self._get_uploaded_file(window)
             if uploaded_file.exists():
                 uploaded_file.unlink()
+        except IOError:
+            pass
+
+
+# --------------------------------------------------------------------------- #
+#                   Problem Queue for Gap-Free Distribution                   #
+# --------------------------------------------------------------------------- #
+
+PROBLEM_QUEUE_DIR = ".problem-queue"
+
+
+class ProblemQueue:
+    """
+    Shared problem queue for gap-free multi-worker problem distribution.
+
+    Instead of round-robin distribution (which creates interleaved gaps when
+    workers finish at different times), workers atomically claim the next
+    problem index from a shared counter. This guarantees contiguous indices.
+
+    Benefits:
+    - No gaps in problem indices (validator requires contiguous indices)
+    - Faster workers naturally do more problems (work stealing)
+    - Overhead is negligible (~1-5ms per claim vs ~1-2s generation time)
+
+    Usage:
+        queue = ProblemQueue(cache_root, worker_id)
+        while mining:
+            problem_index = queue.claim_next_problem(window_start)
+            if problem_index < 0:
+                break  # Window ended or error
+            # Generate rollouts for problem_index
+    """
+
+    def __init__(self, cache_root: Path, worker_id: int):
+        """
+        Initialize problem queue.
+
+        Args:
+            cache_root: Root directory for cache (e.g., ~/.cache/grail)
+            worker_id: This worker's ID (0 = leader)
+        """
+        self.cache_root = Path(cache_root)
+        self.worker_id = worker_id
+        self.is_leader = worker_id == 0
+
+        self.queue_dir = self.cache_root / PROBLEM_QUEUE_DIR
+        self.queue_dir.mkdir(parents=True, exist_ok=True)
+
+        # Leader cleans up stale counter files on startup
+        if self.is_leader:
+            self._cleanup_stale_counters()
+
+    def _cleanup_stale_counters(self) -> None:
+        """Leader removes old counter files on startup."""
+        try:
+            removed = 0
+            for f in self.queue_dir.iterdir():
+                if f.suffix in (".counter", ".lock"):
+                    # Remove counters older than 10 minutes
+                    try:
+                        age = time.time() - f.stat().st_mtime
+                        if age > 600:
+                            f.unlink()
+                            removed += 1
+                    except (IOError, OSError):
+                        pass
+            if removed > 0:
+                logger.info("Leader cleaned up %d stale problem queue files", removed)
+        except Exception as e:
+            logger.warning("Failed to cleanup problem queue files: %s", e)
+
+    def _get_counter_file(self, window: int) -> Path:
+        """Get path for window's problem counter file."""
+        return self.queue_dir / f"window-{window}.counter"
+
+    def _get_lock_file(self, window: int) -> Path:
+        """Get path for window's lock file."""
+        return self.queue_dir / f"window-{window}.lock"
+
+    def claim_next_problem(self, window: int) -> int:
+        """
+        Atomically claim the next problem index for a window.
+
+        Uses file locking to ensure only one worker claims each index.
+        This guarantees contiguous problem indices with no gaps.
+
+        Args:
+            window: Window start block number
+
+        Returns:
+            The claimed problem index (0, 1, 2, ...), or -1 on error
+        """
+        counter_file = self._get_counter_file(window)
+        lock_file = self._get_lock_file(window)
+
+        try:
+            # Open/create lock file
+            with open(lock_file, "w") as lf:
+                # Acquire exclusive lock (blocks until available)
+                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+
+                try:
+                    # Read current counter
+                    if counter_file.exists():
+                        current = int(counter_file.read_text().strip())
+                    else:
+                        current = 0
+
+                    # Write incremented counter
+                    counter_file.write_text(str(current + 1))
+
+                    logger.debug(
+                        "Worker %d claimed problem %d for window %d",
+                        self.worker_id,
+                        current,
+                        window,
+                    )
+
+                    return current
+
+                finally:
+                    # Release lock
+                    fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
+        except Exception as e:
+            logger.error("Failed to claim problem for window %d: %s", window, e)
+            return -1
+
+    def reset_counter(self, window: int) -> None:
+        """
+        Reset counter for a new window.
+
+        Leader should call this at the start of each window.
+        """
+        if not self.is_leader:
+            return
+
+        counter_file = self._get_counter_file(window)
+        lock_file = self._get_lock_file(window)
+
+        try:
+            # Remove old counter file if exists
+            if counter_file.exists():
+                counter_file.unlink()
+            if lock_file.exists():
+                lock_file.unlink()
+            logger.debug("Leader reset problem counter for window %d", window)
+        except IOError as e:
+            logger.warning("Failed to reset counter for window %d: %s", window, e)
+
+    def get_current_count(self, window: int) -> int:
+        """
+        Get current problem count for a window (non-locking read).
+
+        Useful for monitoring/logging.
+        """
+        counter_file = self._get_counter_file(window)
+        try:
+            if counter_file.exists():
+                return int(counter_file.read_text().strip())
+            return 0
+        except (IOError, ValueError):
+            return 0
+
+    def cleanup_window(self, window: int) -> None:
+        """Clean up counter files for a completed window."""
+        try:
+            counter_file = self._get_counter_file(window)
+            lock_file = self._get_lock_file(window)
+            if counter_file.exists():
+                counter_file.unlink()
+            if lock_file.exists():
+                lock_file.unlink()
         except IOError:
             pass

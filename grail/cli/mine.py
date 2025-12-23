@@ -21,6 +21,7 @@ from ..environments.loop import AgentEnvLoop
 from ..grail import derive_env_seed
 from ..infrastructure.comms import sink_window_inferences
 from ..infrastructure.drand import get_drand_beacon
+from ..infrastructure.worker_barrier import ProblemQueue
 from ..infrastructure.worker_config import WorkerConfig, log_multi_gpu_setup
 from ..shared.constants import (
     BLOCK_TIME_SECONDS,
@@ -599,8 +600,16 @@ async def generate_rollouts_for_window(
     total_reward = 0.0
     # Avoid flooding logs in debug mode
     text_logs_emitted = 0  # Running count of emitted debug texts
-    problem_count = 0  # Global problem counter (across all workers)
     worker_problem_count = 0  # Problems this worker has processed
+
+    # Initialize shared problem queue for gap-free distribution
+    # Workers atomically claim problems instead of round-robin, ensuring no gaps
+    cache_root = worker_config.cache_root if hasattr(worker_config, 'cache_root') else os.path.expanduser("~/.cache/grail")
+    problem_queue = ProblemQueue(cache_root, worker_config.worker_id)
+
+    # Leader resets counter at start of each window
+    if worker_config.worker_id == 0:
+        problem_queue.reset_counter(window_start)
 
     # Detect device from model (handles multi-GPU)
     device = getattr(model, "grail_primary_device", None) or model.device
@@ -629,17 +638,14 @@ async def generate_rollouts_for_window(
             # Return empty - rollouts with old checkpoint would be filtered anyway
             return []
 
-        # Multi-worker optimization: calculate next problem for this worker
-        # without fetching current_block for each skipped problem
-        problem_count += 1
-        problem_index = max(0, problem_count - 1)
+        # Atomically claim next problem from shared queue (gap-free distribution)
+        # This replaces round-robin and ensures contiguous problem indices
+        problem_index = problem_queue.claim_next_problem(window_start)
+        if problem_index < 0:
+            logger.error("Failed to claim problem from queue, stopping generation")
+            break
 
-        if not worker_config.should_handle_problem(problem_index):
-            # Skip this problem - another worker will handle it
-            # No RPC call needed, just continue to next iteration
-            continue
-
-        # Only fetch block when we're about to do actual work
+        # Fetch current block to check timing
         current_block = await subtensor.get_current_block()
         timers.update_block_time_ema(current_block)
         current_window = calculate_window_start(current_block)
@@ -683,7 +689,7 @@ async def generate_rollouts_for_window(
             else:
                 logger.info(
                     "⚡ Generating GRPO rollouts for problem %s (block %s/%s)...",
-                    problem_count,
+                    problem_index,
                     current_block,
                     window_start + WINDOW_LENGTH - 1,
                 )
@@ -768,19 +774,19 @@ async def generate_rollouts_for_window(
                 subtensor, timers, window_start, rollout_gen_duration, len(grpo_rollouts), monitor
             )
 
-            if problem_count % 2 == 0:
+            if worker_problem_count % 2 == 0:
                 elapsed = time.time() - start_time
                 rollouts_per_sec = (len(inferences) / elapsed) if elapsed > 0 else 0
                 logger.info(
                     ("📊 Progress: %s rollouts from %s problems in %.1fs (%.1f rollouts/sec)"),
                     len(inferences),
-                    problem_count,
+                    worker_problem_count,
                     elapsed,
                     rollouts_per_sec,
                 )
                 if monitor:
                     await monitor.log_gauge("mining/rollouts_generated", len(inferences))
-                    await monitor.log_gauge("mining/problems_processed", problem_count)
+                    await monitor.log_gauge("mining/problems_processed", worker_problem_count)
                     await monitor.log_gauge("mining/rollouts_per_second", rollouts_per_sec)
                     if successful_rollouts + failed_rollouts > 0:
                         success_rate = successful_rollouts / (successful_rollouts + failed_rollouts)
