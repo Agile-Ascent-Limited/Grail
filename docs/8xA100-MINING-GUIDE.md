@@ -631,40 +631,69 @@ nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --for
 
 ## Performance Tuning
 
-### Safety Blocks Tuning
+### Block Timing and Buffer Settings
 
-The `GRAIL_MINER_SAFETY_BLOCKS` environment variable controls how many blocks before the deadline miners stop generating new rollouts. This is a critical tuning parameter:
+The miner uses multiple settings to control when to stop generating and start uploading. Understanding these helps you tune for maximum throughput without missing deadlines.
+
+**Three settings control the buffer:**
+
+| Setting | Location | Default | Description |
+|---------|----------|---------|-------------|
+| `GRAIL_MINER_SAFETY_BLOCKS` | ecosystem.config.js | 4 | Extra blocks added to timing calculation |
+| Minimum upload blocks | mine.py:391 | 3 | Minimum blocks reserved for upload |
+| Max blocks cap | mine.py:187 | 5 | Hard cap on `blocks_needed_for_next_gen()` |
+
+**How they interact:**
+
+1. The miner calculates `blocks_needed_for_next_gen()` using:
+   - Estimated generation time (EMA)
+   - Estimated upload time (EMA)
+   - `GRAIL_MINER_SAFETY_BLOCKS` buffer
+2. This value is **capped at 5 blocks** to prevent over-conservative stopping
+3. When `blocks_remaining <= blocks_needed_for_next_gen`, mining stops
+4. After generation, upload timing uses `max(3, calculated_upload_blocks)` - ensuring at least 3 blocks (~36s) for upload
+
+**Effective buffer with current settings:**
+```
+Generation stops at: 5 blocks remaining (~60s before deadline)
+Upload has: 3+ blocks reserved (~36s minimum)
+```
+
+**GRAIL_MINER_SAFETY_BLOCKS values:**
 
 | Setting | Buffer Time | Use Case |
 |---------|-------------|----------|
-| 1 | ~12 seconds | **Aggressive (vLLM recommended)** - Maximum throughput |
-| 2 | ~24 seconds | Conservative - For slower backends or unstable networks |
-| 3+ | ~36+ seconds | Very conservative - Only if experiencing missed deadlines |
-
-**How it works:**
-
-1. The miner calculates `blocks_needed_for_next_gen` which estimates how many blocks are needed to complete the next generation batch plus upload time
-2. When `blocks_remaining <= blocks_needed_for_next_gen`, the miner stops generating and uploads
-3. The safety blocks value is added as buffer to this calculation
+| 1 | ~12 seconds | **Aggressive** - Maximum throughput, fast networks only |
+| 2 | ~24 seconds | Moderate - Good for most setups |
+| 3 | ~36 seconds | Conservative - Slower backends or unstable networks |
+| 4 | ~48 seconds | **Default** - Safe buffer for 8x A100 with vLLM |
 
 **Recommended settings:**
 
-- **vLLM backend**: Set to `1` - vLLM is fast enough that you don't need extra buffer. This was tested to achieve 2400+ rollouts per window.
-- **HuggingFace backend**: Set to `2` or `3` - Slower inference means more buffer is safer
-- **Flash Attention backend**: Set to `2` - Middle ground
+- **vLLM backend (8x A100)**: `GRAIL_MINER_SAFETY_BLOCKS=4` with the hardcoded caps provides ~60s total buffer
+- **HuggingFace backend**: Consider increasing safety blocks to `5` or `6`
+- **Flash Attention backend**: `GRAIL_MINER_SAFETY_BLOCKS=3` or `4`
 
 **Symptoms of incorrect settings:**
 
-- **Safety blocks too high**: Uploading 60+ seconds before deadline (wasted mining time)
-- **Safety blocks too low**: Missing deadlines, incomplete uploads, or "duplicate nonce" errors
+- **Buffer too high**: Uploading 60+ seconds before deadline (wasted mining time, fewer rollouts)
+- **Buffer too low**: Missing deadlines, incomplete uploads, or "duplicate nonce" errors
 
 **Monitoring upload timing:**
 
-Check your validator logs for upload timing:
+Check your logs for upload timing:
 ```
+Generation timing: 5 blocks remaining, 60.0s left, upload needs 3 blocks - ✅ SAFE
 Parquet file ... uploaded 15s before deadline  # Good - close to deadline
 Parquet file ... uploaded 69s before deadline  # Too early - reduce safety blocks
 ```
+
+**Tuning for maximum throughput:**
+
+If you're consistently uploading 60+ seconds before deadline and want more rollouts:
+1. Reduce `GRAIL_MINER_SAFETY_BLOCKS` by 1 in ecosystem.config.js
+2. Monitor for a few windows to ensure uploads still complete
+3. If uploads are cutting it close (<10s before deadline), increase back
 
 ### Recommended Settings by Model Size
 
