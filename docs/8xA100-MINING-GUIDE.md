@@ -46,6 +46,9 @@ The barrier file is stored at `~/.cache/grail/.worker-barrier/leader-ready.json`
 ### 1. Install System Dependencies
 
 ```bash
+# Common utilities
+apt-get update && apt-get install -y sudo nano htop nload
+
 # CUDA drivers (should be pre-installed on cloud instances)
 nvidia-smi  # Verify GPUs are visible
 
@@ -69,7 +72,7 @@ npm install -g pm2
 ### 2. Clone the Repository
 
 ```bash
-git clone https://github.com/one-covenant/grail
+git clone https://github.com/Agile-Ascent-Limited/Grail.git
 cd grail
 ```
 
@@ -1264,7 +1267,7 @@ With 8x A100 80GB running the 4B model:
 ```bash
 # 1. Install uv and clone repo
 curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.bashrc
-git clone https://github.com/one-covenant/grail && cd grail
+git clone https://github.com/Agile-Ascent-Limited/Grail.git && cd grail
 
 # 2. Install dependencies
 uv venv --python 3.10 && source .venv/bin/activate
