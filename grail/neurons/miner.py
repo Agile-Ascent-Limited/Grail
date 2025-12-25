@@ -321,6 +321,19 @@ class MinerNeuron(BaseNeuron):
                     if barrier.is_leader:
                         barrier.signal_current_window(window_start)
 
+                    # Followers: ensure we're on the same window as leader before proceeding.
+                    # This prevents getting stuck waiting for checkpoints of future windows.
+                    if not barrier.is_leader:
+                        leader_window = barrier.get_leader_window()
+                        if leader_window is not None and leader_window > window_start:
+                            # Leader is ahead - skip this window and catch up
+                            logger.info(
+                                f"📍 Worker {worker_config.worker_id} skipping window {window_start} "
+                                f"(leader on {leader_window}), catching up..."
+                            )
+                            last_window_start = window_start
+                            continue
+
                     # Followers: check if leader is downloading a checkpoint BEFORE
                     # we discover/load checkpoints. This ensures all workers sync.
                     if not barrier.is_leader:
@@ -636,26 +649,29 @@ class MinerNeuron(BaseNeuron):
                             await monitor.log_counter("mining/empty_windows")
 
                         # Followers: if we had no rollouts (likely aborted due to checkpoint),
-                        # wait for leader to finish downloading before continuing.
-                        # This prevents followers from jumping ahead while leader downloads.
+                        # sync to leader's window. Only wait for checkpoint if leader is
+                        # downloading for the SAME window we're on.
                         if not barrier.is_leader:
-                            # Check if leader is downloading - if so, wait for it
-                            if barrier.is_leader_downloading():
-                                logger.info(
-                                    f"⏳ Worker {worker_config.worker_id} waiting for leader "
-                                    f"to finish checkpoint download..."
-                                )
-                                await barrier.wait_for_checkpoint_sync(
-                                    current_checkpoint_window, timeout=300.0
-                                )
-                            # After download complete, sync to leader's window
                             leader_window = barrier.get_leader_window()
-                            if leader_window is not None and leader_window != window_start:
+                            # Only wait for checkpoint if leader is on same or earlier window
+                            # If leader is ahead, don't wait - just skip to catch up
+                            if leader_window is None or leader_window <= window_start:
+                                if barrier.is_leader_downloading():
+                                    logger.info(
+                                        f"⏳ Worker {worker_config.worker_id} waiting for leader "
+                                        f"to finish checkpoint download..."
+                                    )
+                                    await barrier.wait_for_checkpoint_sync(
+                                        current_checkpoint_window, timeout=300.0
+                                    )
+                            # After download complete (or skip), sync to leader's window
+                            if leader_window is not None and leader_window > window_start:
                                 logger.info(
-                                    f"📍 Worker {worker_config.worker_id} syncing to leader's "
+                                    f"📍 Worker {worker_config.worker_id} catching up to leader's "
                                     f"window {leader_window} (was on {window_start})"
                                 )
-                                # Don't update last_window_start - let next iteration handle it
+                                # Update last_window_start to avoid reprocessing this window
+                                last_window_start = window_start
                                 continue
 
                     last_window_start = window_start
