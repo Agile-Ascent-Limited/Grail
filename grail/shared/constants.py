@@ -121,7 +121,7 @@ GRPO_RANKING_REWARD_WEIGHT = float(os.getenv("GRAIL_GRPO_RANKING_REWARD_WEIGHT",
 GRPO_RANKING_VARIANCE_WEIGHT = float(os.getenv("GRAIL_GRPO_RANKING_VARIANCE_WEIGHT", "0.3"))
 
 # Checkpoint retention controls
-CHECKPOINT_MILESTONE_INTERVAL = int(os.getenv("GRAIL_CHECKPOINT_MILESTONE_INTERVAL", "100"))
+CHECKPOINT_MILESTONE_INTERVAL = int(os.getenv("GRAIL_CHECKPOINT_MILESTONE_INTERVAL", "0"))
 
 # R2 retention limits (used by checkpoint_publisher for trainer uploads)
 # BASE: complete model weights (~14GB); DELTA: sparse diffs that depend on a BASE
@@ -201,7 +201,8 @@ GRAIL_BURN_PERCENTAGE = 80.0
 
 # Maximum unique rollouts per miner that count toward weight allocation.
 # Miners are rewarded proportionally to how close they are to this cap.
-UNIQUE_ROLLOUTS_CAP = 5120
+# This cap covers the full 12-window rolling period (5120 per window × 12 windows).
+UNIQUE_ROLLOUTS_CAP = 61440
 
 # ────────────────  MINER SAMPLING (VALIDATION COST CONTROL)  ────────────────
 
@@ -275,6 +276,23 @@ PARAM_CHANGE_RELATIVE_EPS = float(os.getenv("GRAIL_PARAM_CHANGE_RELATIVE_EPS", "
 
 # Enable/disable sparse quality analysis (runs at same interval as param tracking)
 SPARSE_QUALITY_ENABLED = os.getenv("GRAIL_SPARSE_QUALITY_ENABLED", "0") == "1"
+
+# ────────────────  CHECKPOINT PATH CONFIGURATION  ────────────────
+
+# R2 bucket prefix for all checkpoints
+CHECKPOINT_PREFIX = "grail/checkpoints/"
+
+# Subdirectory names for checkpoint types
+# At anchor windows, both DELTA and FULL coexist under:
+#   checkpoint-{window}/DELTA/  (sparse delta for caught-up consumers)
+#   checkpoint-{window}/FULL/   (full weights for new joiners)
+CHECKPOINT_SUBDIR_DELTA = "DELTA"
+CHECKPOINT_SUBDIR_FULL = "FULL"
+
+# Checkpoint type identifiers (used in metadata.json)
+CHECKPOINT_TYPE_DELTA = "DELTA"
+CHECKPOINT_TYPE_FULL = "FULL"
+
 
 # ────────────────  DELTA CHECKPOINT CONFIGURATION  ────────────────
 
