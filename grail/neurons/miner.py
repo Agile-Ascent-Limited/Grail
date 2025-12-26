@@ -531,8 +531,8 @@ class MinerNeuron(BaseNeuron):
                                     logger.info(
                                         f"🔮 Prefetching checkpoint {next_ckpt} for next window {next_window}..."
                                     )
-                                    # Signal to followers that we're downloading
-                                    barrier.signal_checkpoint_downloading(next_ckpt)
+                                    # NOTE: Do NOT signal downloading here - prefetch is for NEXT window.
+                                    # Signaling would trigger followers' abort_check and discard their rollouts.
                                     # Download and reconstruct (this is the slow part)
                                     ckpt_path = await checkpoint_manager.get_checkpoint(next_ckpt)
                                     if ckpt_path:
