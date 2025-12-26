@@ -495,6 +495,9 @@ class MinerNeuron(BaseNeuron):
                     def abort_check() -> bool:
                         return barrier.is_leader_downloading(current_checkpoint_window)
 
+                    # Background prefetch task reference (leader only)
+                    prefetch_task: asyncio.Task | None = None
+
                     inferences = await generate_rollouts_for_window(
                         wallet,
                         model,
@@ -510,6 +513,37 @@ class MinerNeuron(BaseNeuron):
                         worker_config,  # Multi-worker support
                         abort_check=abort_check,
                     )
+
+                    # PREFETCH: Leader starts background checkpoint download for NEXT window
+                    # This runs in parallel with staging/upload so checkpoint is ready when
+                    # next window starts (saves 60+ seconds of reconstruction time)
+                    if barrier.is_leader:
+                        next_window = window_start + WINDOW_LENGTH
+
+                        async def _prefetch_next_checkpoint():
+                            """Background task to prefetch checkpoint for next window."""
+                            try:
+                                # Discover latest ready checkpoint for next window
+                                next_ckpt = await checkpoint_manager.get_latest_ready_checkpoint(
+                                    next_window
+                                )
+                                if next_ckpt is not None and next_ckpt != current_checkpoint_window:
+                                    logger.info(
+                                        f"🔮 Prefetching checkpoint {next_ckpt} for next window {next_window}..."
+                                    )
+                                    # Signal to followers that we're downloading
+                                    barrier.signal_checkpoint_downloading(next_ckpt)
+                                    # Download and reconstruct (this is the slow part)
+                                    ckpt_path = await checkpoint_manager.get_checkpoint(next_ckpt)
+                                    if ckpt_path:
+                                        barrier.update_checkpoint(str(ckpt_path), next_ckpt)
+                                        logger.info(
+                                            f"✅ Prefetched checkpoint {next_ckpt} ready at {ckpt_path}"
+                                        )
+                            except Exception as e:
+                                logger.debug(f"Prefetch failed (non-critical): {e}")
+
+                        prefetch_task = asyncio.create_task(_prefetch_next_checkpoint())
 
                     if inferences:
                         # Multi-worker aggregation: all workers stage locally,
@@ -659,6 +693,16 @@ class MinerNeuron(BaseNeuron):
                                 continue
 
                     last_window_start = window_start
+
+                    # Wait for prefetch task to complete before next window
+                    # This ensures the checkpoint is fully downloaded/reconstructed
+                    if prefetch_task is not None:
+                        try:
+                            await prefetch_task
+                        except Exception as e:
+                            logger.debug(f"Prefetch task error (non-critical): {e}")
+                        prefetch_task = None
+
                     # Only leader should cleanup checkpoints, and only after a new
                     # checkpoint was loaded (ensures all workers have moved to new one)
                     # DISABLED: Keep checkpoints to avoid re-downloading base for delta reconstruction

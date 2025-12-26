@@ -1,9 +1,14 @@
-// ecosystem.config.js - PM2 configuration for 8x A100 mining with vLLM backend
+// ecosystem.config.js - PM2 configuration for 8x H200 mining with vLLM backend
 // Each worker runs on its own GPU with vLLM (auto-spawned server)
 //
 // LEADER-FOLLOWER PATTERN:
 //   Worker 0 (leader) initializes blockchain/checkpoints and signals ready via barrier file.
 //   Workers 1-7 (followers) wait for leader's barrier signal before mining (no PM2 delay needed).
+//
+// H200 OPTIMIZATIONS (141GB HBM3e):
+//   - GRAIL_VLLM_GPU_MEMORY_UTIL: 0.85 (use 85% for KV cache, ~120GB)
+//   - GRAIL_GENERATION_BATCH_SIZE: 64 (larger batches for H200 throughput)
+//   - GRAIL_VLLM_MAX_NUM_SEQS: 128 (allow more concurrent sequences)
 //
 // SETUP:
 //   1. pm2 start ecosystem.config.js      # Start miners with vLLM backend
@@ -26,10 +31,12 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '0',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_GENERATION_BATCH_SIZE: '64',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
+        GRAIL_VLLM_MAX_NUM_SEQS: '128',
         GRAIL_MINER_SAFETY_BLOCKS: '4',  // Safe buffer: 4 blocks = ~48s
       },
-      max_memory_restart: '80G',
+      max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-0-error.log',
       out_file: '/var/log/grail/worker-0-out.log',
@@ -48,10 +55,12 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '1',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_GENERATION_BATCH_SIZE: '64',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
+        GRAIL_VLLM_MAX_NUM_SEQS: '128',
         GRAIL_MINER_SAFETY_BLOCKS: '4',  // Safe buffer: 4 blocks = ~48s
       },
-      max_memory_restart: '80G',
+      max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-1-error.log',
       out_file: '/var/log/grail/worker-1-out.log',
@@ -70,10 +79,12 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '2',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_GENERATION_BATCH_SIZE: '64',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
+        GRAIL_VLLM_MAX_NUM_SEQS: '128',
         GRAIL_MINER_SAFETY_BLOCKS: '4',  // Safe buffer: 4 blocks = ~48s
       },
-      max_memory_restart: '80G',
+      max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-2-error.log',
       out_file: '/var/log/grail/worker-2-out.log',
@@ -92,10 +103,12 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '3',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_GENERATION_BATCH_SIZE: '64',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
+        GRAIL_VLLM_MAX_NUM_SEQS: '128',
         GRAIL_MINER_SAFETY_BLOCKS: '4',  // Safe buffer: 4 blocks = ~48s
       },
-      max_memory_restart: '80G',
+      max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-3-error.log',
       out_file: '/var/log/grail/worker-3-out.log',
@@ -114,10 +127,12 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '4',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_GENERATION_BATCH_SIZE: '64',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
+        GRAIL_VLLM_MAX_NUM_SEQS: '128',
         GRAIL_MINER_SAFETY_BLOCKS: '4',  // Safe buffer: 4 blocks = ~48s
       },
-      max_memory_restart: '80G',
+      max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-4-error.log',
       out_file: '/var/log/grail/worker-4-out.log',
@@ -136,10 +151,12 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '5',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_GENERATION_BATCH_SIZE: '64',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
+        GRAIL_VLLM_MAX_NUM_SEQS: '128',
         GRAIL_MINER_SAFETY_BLOCKS: '4',  // Safe buffer: 4 blocks = ~48s
       },
-      max_memory_restart: '80G',
+      max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-5-error.log',
       out_file: '/var/log/grail/worker-5-out.log',
@@ -158,10 +175,12 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '6',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_GENERATION_BATCH_SIZE: '64',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
+        GRAIL_VLLM_MAX_NUM_SEQS: '128',
         GRAIL_MINER_SAFETY_BLOCKS: '4',  // Safe buffer: 4 blocks = ~48s
       },
-      max_memory_restart: '80G',
+      max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-6-error.log',
       out_file: '/var/log/grail/worker-6-out.log',
@@ -180,10 +199,12 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '7',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_GENERATION_BATCH_SIZE: '64',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
+        GRAIL_VLLM_MAX_NUM_SEQS: '128',
         GRAIL_MINER_SAFETY_BLOCKS: '4',  // Safe buffer: 4 blocks = ~48s
       },
-      max_memory_restart: '80G',
+      max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-7-error.log',
       out_file: '/var/log/grail/worker-7-out.log',
