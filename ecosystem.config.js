@@ -6,9 +6,9 @@
 //   Workers 1-7 (followers) wait for leader's barrier signal before mining (no PM2 delay needed).
 //
 // H200 OPTIMIZATIONS (141GB HBM3e):
-//   - GRAIL_VLLM_GPU_MEMORY_UTIL: 0.85 (use 85% for KV cache, ~120GB)
-//   - GRAIL_GENERATION_BATCH_SIZE: 64 (larger batches for H200 throughput)
-//   - GRAIL_VLLM_MAX_NUM_SEQS: 128 (allow more concurrent sequences)
+//   - GRAIL_VLLM_GPU_MEMORY_UTIL: 0.70 (70% for vLLM, leaves ~42GB for HF proof model)
+//   - GRAIL_GENERATION_BATCH_SIZE: 16 (matches ROLLOUTS_PER_PROBLEM cap)
+//   - GRAIL_VLLM_MAX_NUM_SEQS: 32 (16 prompts × 2x buffer)
 //
 // SETUP:
 //   1. pm2 start ecosystem.config.js      # Start miners with vLLM backend
@@ -31,9 +31,9 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '0',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '64',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
-        GRAIL_VLLM_MAX_NUM_SEQS: '128',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
@@ -55,9 +55,9 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '1',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '64',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
-        GRAIL_VLLM_MAX_NUM_SEQS: '128',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
@@ -79,9 +79,9 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '2',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '64',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
-        GRAIL_VLLM_MAX_NUM_SEQS: '128',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
@@ -103,9 +103,9 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '3',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '64',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
-        GRAIL_VLLM_MAX_NUM_SEQS: '128',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
@@ -127,9 +127,9 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '4',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '64',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
-        GRAIL_VLLM_MAX_NUM_SEQS: '128',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
@@ -151,9 +151,9 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '5',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '64',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
-        GRAIL_VLLM_MAX_NUM_SEQS: '128',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
@@ -175,9 +175,9 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '6',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '64',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
-        GRAIL_VLLM_MAX_NUM_SEQS: '128',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
@@ -199,9 +199,9 @@ module.exports = {
         CUDA_VISIBLE_DEVICES: '7',
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',  // vLLM has flash-attn built-in
-        GRAIL_GENERATION_BATCH_SIZE: '64',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.85',
-        GRAIL_VLLM_MAX_NUM_SEQS: '128',
+        GRAIL_GENERATION_BATCH_SIZE: '16',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
