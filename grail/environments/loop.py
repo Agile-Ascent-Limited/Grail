@@ -1094,6 +1094,138 @@ class AgentEnvLoop:
 
         return rollouts
 
+    # ---------------------- Pipelined GRPO Generation ----------------------
+    # These methods separate vLLM generation from proof computation to enable
+    # overlapping: vLLM for problem N+1 can run while proofs compute for N.
+
+    async def prepare_grpo_generation_async(
+        self,
+        env_factory: Callable[[], MultiTurnEnv],
+        count: int,
+        *,
+        batch_size: int = 1,
+        seed: int | None = None,
+    ) -> list[tuple[list[int], int, float, dict]]:
+        """Async phase: create envs, generate tokens via vLLM, step envs.
+
+        This is the first phase of pipelined GRPO generation. It runs async
+        vLLM generation and returns intermediate data for proof computation.
+
+        Args:
+            env_factory: Factory function to create environment instances
+            count: Number of rollouts to generate
+            batch_size: Number of rollouts per vLLM batch
+            seed: Optional seed for environment reset
+
+        Returns:
+            List of tuples: (all_token_ids, prompt_len, reward, info)
+            Ready for proof computation in compute_grpo_proofs_sync.
+        """
+        all_batch_data: list[tuple[list[int], int, float, dict]] = []
+
+        for batch_start in range(0, count, batch_size):
+            batch_end = min(batch_start + batch_size, count)
+            batch_count = batch_end - batch_start
+
+            # Create and reset environments
+            envs = [env_factory() for _ in range(batch_count)]
+            obs_list = [env.reset(seed=seed) for env in envs]
+
+            # Collect prompts
+            prompts_list = [
+                [{"role": m.role, "content": m.content} for m in obs.messages]
+                for obs in obs_list
+            ]
+
+            # Async vLLM generation (the fast part we want to overlap)
+            batch_results = await self._batch_generate_tokens(
+                prompts_list, include_logprobs=False
+            )
+
+            # Step environments and collect results
+            for env, (all_ids, prompt_len, _chosen_lp) in zip(
+                envs, batch_results, strict=False
+            ):
+                completion_ids = all_ids[prompt_len:]
+                completion_text = self.tokenizer.decode(
+                    completion_ids, skip_special_tokens=False
+                )
+                _next_obs, reward, _terminated, _truncated, info = env.step(
+                    ChatMessage(role="assistant", content=completion_text)
+                )
+                all_batch_data.append((all_ids, prompt_len, float(reward), info))
+
+        return all_batch_data
+
+    def compute_grpo_proofs_sync(
+        self,
+        batch_data: list[tuple[list[int], int, float, dict]],
+        randomness_hex: str,
+        wallet: Any,
+    ) -> list[GRPORollout]:
+        """Sync phase: compute GRAIL proofs and build rollouts.
+
+        This is the second phase of pipelined GRPO generation. It runs
+        CPU/GPU-bound proof computation and should be called in a thread pool.
+
+        Args:
+            batch_data: Output from prepare_grpo_generation_async
+            randomness_hex: Hex string for randomness beacon
+            wallet: Bittensor wallet for signing
+
+        Returns:
+            List of GRPORollout with proofs computed and advantages set.
+        """
+        if not batch_data:
+            return []
+
+        all_ids_batch = [data[0] for data in batch_data]
+        prompt_lens = [data[1] for data in batch_data]
+
+        # This is the slow part (~7s for 16 rollouts)
+        proof_results = self._batch_compute_commitments_and_logprobs(
+            all_ids_batch,
+            prompt_lens,
+            randomness_hex,
+            wallet,
+        )
+
+        # Build rollouts
+        rollouts: list[GRPORollout] = []
+        for (all_ids, prompt_len, reward, info), (
+            commitments,
+            logprobs,
+            signature,
+            beacon,
+            proof_version,
+        ) in zip(batch_data, proof_results, strict=False):
+            completion_ids = all_ids[prompt_len:]
+            action_val = info.get("assignment", [])
+            trajectory = [(0, action_val, reward)]
+
+            rollout = GRPORollout(
+                tokens=all_ids,
+                token_logprobs=[0.0] * prompt_len + logprobs,
+                prompt_length=int(prompt_len),
+                completion_length=int(len(completion_ids)),
+                reward=reward,
+                advantage=0.0,
+                trajectory=trajectory,
+                success=bool(info.get("success", False)),
+                commitments=commitments,
+                signature=signature,
+                beacon=beacon,
+                proof_version=proof_version,
+            )
+            rollouts.append(rollout)
+
+        # Compute advantages
+        advantages = self._compute_advantages([r.reward for r in rollouts])
+        for rollout, adv in zip(rollouts, advantages, strict=False):
+            rollout.advantage = float(adv)
+
+        return rollouts
+
     # ---------------------- Shared eval helpers ----------------------
     def render_prompt_ids_batch(self, messages_list: list[list[dict[str, str]]]) -> list[list[int]]:
         """Render a batch of chat messages to token IDs using the tokenizer's template."""
