@@ -30,11 +30,15 @@ REDIS_PREFIX = "grail:problems"
 # Should be longer than a window (~6 minutes) but not too long
 CLAIM_TTL = 600  # 10 minutes
 
+# Maximum problems per window (configurable via env var)
+# Default 500 supports ~8 H200s at 2 rollouts/s for 300s windows
+MAX_PROBLEMS_PER_WINDOW = int(os.getenv("GRAIL_MAX_PROBLEMS_PER_WINDOW", "500"))
+
 
 class ProblemQueueProtocol(Protocol):
     """Protocol for problem queue implementations."""
 
-    def claim_next_problem(self, window: int, max_attempts: int = 200) -> int:
+    def claim_next_problem(self, window: int, max_attempts: int = MAX_PROBLEMS_PER_WINDOW) -> int:
         """Claim the next available problem index."""
         ...
 
@@ -129,7 +133,7 @@ class RedisProblemQueue:
         """Get Redis key for problem claim (for tracking/debugging)."""
         return f"{REDIS_PREFIX}:{window}:claim:{problem_index}"
 
-    def claim_next_problem(self, window: int, max_attempts: int = 200) -> int:
+    def claim_next_problem(self, window: int, max_attempts: int = MAX_PROBLEMS_PER_WINDOW) -> int:
         """
         Atomically claim the next problem index.
 
@@ -138,7 +142,7 @@ class RedisProblemQueue:
 
         Args:
             window: Window start block number
-            max_attempts: Maximum problem index (safety limit)
+            max_attempts: Maximum problem index (safety limit, default from GRAIL_MAX_PROBLEMS_PER_WINDOW)
 
         Returns:
             The claimed problem index, or -1 on error

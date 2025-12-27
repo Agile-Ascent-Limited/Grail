@@ -28,6 +28,10 @@ BLOCK_CACHE_FILE = "current-block.txt"  # Lightweight block sharing
 
 # How long barrier data is considered fresh (seconds)
 BARRIER_MAX_AGE = 600  # 10 minutes
+
+# Maximum problems per window (configurable via env var)
+# Default 500 supports ~8 H200s at 2 rollouts/s for 300s windows
+MAX_PROBLEMS_PER_WINDOW = int(os.getenv("GRAIL_MAX_PROBLEMS_PER_WINDOW", "500"))
 BLOCK_CACHE_MAX_AGE = 30  # Block cache stale after 30 seconds
 
 
@@ -993,7 +997,7 @@ class ProblemQueue:
         )
         return False
 
-    def claim_next_problem(self, window: int, max_attempts: int = 200) -> int:
+    def claim_next_problem(self, window: int, max_attempts: int = MAX_PROBLEMS_PER_WINDOW) -> int:
         """
         Atomically claim the next problem index for a window.
 
@@ -1003,7 +1007,7 @@ class ProblemQueue:
 
         Args:
             window: Window start block number
-            max_attempts: Maximum problem index to try (prevents infinite loop)
+            max_attempts: Maximum problem index to try (default from GRAIL_MAX_PROBLEMS_PER_WINDOW)
 
         Returns:
             The claimed problem index (0, 1, 2, ...), or -1 on error
