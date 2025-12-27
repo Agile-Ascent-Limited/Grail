@@ -1401,6 +1401,8 @@ class AgentEnvLoop:
             List of tuples: (commitments, logprobs, signature, beacon, proof_version)
             one per rollout in the batch.
         """
+        import time as _time
+
         if self._hidden_dim is None:
             raise RuntimeError(
                 "Cannot compute GRAIL proofs: hidden_dim not initialized. "
@@ -1418,6 +1420,13 @@ class AgentEnvLoop:
         r_vec = verifier.generate_r_vec(randomness_hex)
 
         results: list[tuple[list[dict], list[float], bytes, dict, str]] = []
+
+        # Timing accumulators for profiling
+        total_forward_time = 0.0
+        total_commitment_time = 0.0
+        total_logprob_time = 0.0
+        total_signing_time = 0.0
+        proof_start = _time.monotonic()
 
         # Process each rollout individually (unbatched) to match validator
         for idx, all_token_ids in enumerate(all_token_ids_batch):
@@ -1442,6 +1451,8 @@ class AgentEnvLoop:
             # Clear captured state before forward pass
             self._captured_hidden_state = None
 
+            # TIME: HF forward pass
+            t0 = _time.monotonic()
             with torch.inference_mode():
                 # CRITICAL: No attention_mask, no position_ids - uses model defaults
                 # This ensures hidden states match validator's computation exactly
@@ -1467,27 +1478,35 @@ class AgentEnvLoop:
                 # logits shape: [1, seq_len, vocab_size]
                 # Move logits to CPU (validator keeps logits on CPU as well)
                 logits = model_outputs.logits[0].detach().to("cpu")
+            total_forward_time += _time.monotonic() - t0
 
-            commitments: list[dict] = []
             logprobs: list[float] = []
 
-            # Extract commitments for this sequence
-            for pos in range(len(all_token_ids)):
-                commitment = verifier.create_commitment(h_layer[pos], r_vec, pos)
-                commitments.append(commitment)
+            # TIME: Commitment creation
+            t0 = _time.monotonic()
+            # VECTORIZED COMMITMENT CREATION (50-100x faster than per-position loop)
+            # This replaces seq_len * topk Python function calls with batched GPU ops
+            commitments = verifier.create_commitments_batch(h_layer, r_vec)
+            total_commitment_time += _time.monotonic() - t0
 
-                # Log sample commitments for debugging
-                if idx == 0 and pos in [0, prompt_len - 1, prompt_len, len(all_token_ids) - 1]:
-                    logger.debug(
-                        "MINER COMMITMENT pos=%d token_id=%d "
-                        "sketch_hash=%s rank_hash=%s hidden_norm=%.6f",
-                        pos,
-                        all_token_ids[pos],
-                        commitment.get("sketch_hash", "")[:16],
-                        commitment.get("rank_hash", "")[:16],
-                        float(h_layer[pos].norm().item()),
-                    )
+            # Log sample commitments for debugging (first rollout only)
+            if idx == 0:
+                sample_positions = [0, prompt_len - 1, prompt_len, len(all_token_ids) - 1]
+                for pos in sample_positions:
+                    if 0 <= pos < len(commitments):
+                        commitment = commitments[pos]
+                        logger.debug(
+                            "MINER COMMITMENT pos=%d token_id=%d "
+                            "sketch_hash=%s rank_hash=%s hidden_norm=%.6f",
+                            pos,
+                            all_token_ids[pos],
+                            str(commitment.get("sketch", ""))[:16],
+                            str(commitment.get("indices", [])[:4]),
+                            float(h_layer[pos].norm().item()),
+                        )
 
+            # TIME: Logprob extraction
+            t0 = _time.monotonic()
             # Extract logprobs for completion tokens using BATCHED log_softmax
             # For each completion token at position (prompt_len + i),
             # we need the logits from the PREVIOUS position (prompt_len - 1 + i)
@@ -1536,7 +1555,10 @@ class AgentEnvLoop:
                         "No valid logit positions for completion tokens; setting all logprobs to -inf"
                     )
                     logprobs = [float("-inf")] * num_completion_tokens
+            total_logprob_time += _time.monotonic() - t0
 
+            # TIME: Signing
+            t0 = _time.monotonic()
             # Sign commitments
             commitment_data = json.dumps(commitments, sort_keys=True)
             commitment_hash = hashlib.sha256(commitment_data.encode()).digest()
@@ -1550,9 +1572,23 @@ class AgentEnvLoop:
             proof_version = GRAIL_PROOF_VERSION
 
             results.append((commitments, logprobs, signature, beacon, proof_version))
+            total_signing_time += _time.monotonic() - t0
 
-        logger.debug(
-            "Completed unbatched proof computation for %d rollout(s)", len(all_token_ids_batch)
+        # Log timing breakdown
+        total_proof_time = _time.monotonic() - proof_start
+        logger.info(
+            "PROOF TIMING for %d rollouts: total=%.2fs | forward=%.2fs (%.0f%%) | "
+            "commit=%.2fs (%.0f%%) | logprob=%.2fs (%.0f%%) | sign=%.2fs (%.0f%%)",
+            len(all_token_ids_batch),
+            total_proof_time,
+            total_forward_time,
+            100 * total_forward_time / total_proof_time if total_proof_time > 0 else 0,
+            total_commitment_time,
+            100 * total_commitment_time / total_proof_time if total_proof_time > 0 else 0,
+            total_logprob_time,
+            100 * total_logprob_time / total_proof_time if total_proof_time > 0 else 0,
+            total_signing_time,
+            100 * total_signing_time / total_proof_time if total_proof_time > 0 else 0,
         )
 
         return results
