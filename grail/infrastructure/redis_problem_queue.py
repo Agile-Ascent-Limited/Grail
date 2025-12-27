@@ -292,17 +292,35 @@ def get_problem_queue(
     """
     Get the appropriate problem queue implementation.
 
-    If GRAIL_REDIS_URL is set, returns RedisProblemQueue for cross-server
-    coordination. Otherwise returns file-based ProblemQueue for single-server.
+    Priority order:
+    1. Static allocation (GRAIL_STATIC_ALLOCATION=1) - zero overhead, pre-assigned ranges
+    2. Redis (GRAIL_REDIS_URL) - for cross-server coordination
+    3. File-based - default single-server mode
 
     Args:
         cache_root: Cache root directory (for file-based fallback)
         worker_id: This worker's ID
-        total_workers: Total workers (for file-based fallback)
+        total_workers: Total workers
 
     Returns:
         Problem queue instance
     """
+    from pathlib import Path
+
+    # Priority 1: Static allocation (DDP-style, zero overhead)
+    static_enabled = os.getenv("GRAIL_STATIC_ALLOCATION", "").lower() in ("1", "true", "yes")
+    if static_enabled:
+        from grail.infrastructure.worker_barrier import StaticProblemAllocator, PROBLEMS_PER_WORKER
+
+        logger.info(
+            "Using STATIC allocation: %d problems/worker, worker %d/%d (zero overhead)",
+            PROBLEMS_PER_WORKER,
+            worker_id,
+            total_workers,
+        )
+        return StaticProblemAllocator(worker_id, total_workers, PROBLEMS_PER_WORKER)
+
+    # Priority 2: Redis (cross-server coordination)
     redis_url = os.getenv("GRAIL_REDIS_URL", "").strip()
 
     if redis_url:
@@ -321,8 +339,7 @@ def get_problem_queue(
         except Exception as e:
             logger.warning("Failed to connect to Redis, falling back to file-based: %s", e)
 
-    # Fallback to file-based
+    # Priority 3: File-based (default single-server)
     from grail.infrastructure.worker_barrier import ProblemQueue
-    from pathlib import Path
 
     return ProblemQueue(Path(cache_root), worker_id)

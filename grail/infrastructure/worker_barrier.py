@@ -1133,3 +1133,172 @@ class ProblemQueue:
                 ready_file.unlink()
         except IOError:
             pass
+
+
+# Static allocation configuration
+STATIC_ALLOCATION_ENABLED = os.getenv("GRAIL_STATIC_ALLOCATION", "").lower() in ("1", "true", "yes")
+PROBLEMS_PER_WORKER = int(os.getenv("GRAIL_PROBLEMS_PER_WORKER", "40"))
+
+
+class StaticProblemAllocator:
+    """
+    Zero-overhead static problem allocation for DDP-style coordination.
+
+    Instead of dynamically claiming problems with file locks, each worker
+    is pre-assigned a contiguous range of problem indices based on its worker ID.
+
+    Configuration:
+        GRAIL_STATIC_ALLOCATION=1  - Enable static allocation
+        GRAIL_PROBLEMS_PER_WORKER=40  - Problems per worker per window
+
+    Example with 8 workers and 40 problems each (320 total):
+        Worker 0: problems 0-39
+        Worker 1: problems 40-79
+        Worker 2: problems 80-119
+        ...
+        Worker 7: problems 280-319
+
+    Benefits:
+        - Zero claiming overhead (no file locks, no Redis calls)
+        - Deterministic problem assignment (good for curriculum learning)
+        - No coordination needed between workers
+
+    Trade-off:
+        - Must use conservative "lower bound" estimate for problems_per_worker
+        - If a worker finishes early, those slots are wasted
+        - Variance in generation speed leads to underutilization
+    """
+
+    def __init__(self, worker_id: int, total_workers: int, problems_per_worker: int = PROBLEMS_PER_WORKER):
+        """
+        Initialize static problem allocator.
+
+        Args:
+            worker_id: This worker's ID (0 to total_workers-1)
+            total_workers: Total number of workers
+            problems_per_worker: How many problems each worker handles per window
+        """
+        self.worker_id = worker_id
+        self.total_workers = total_workers
+        self.problems_per_worker = problems_per_worker
+        self.is_leader = worker_id == 0
+
+        # Track current position within our allocated range
+        self._current_window: int | None = None
+        self._next_index: int = 0
+
+        # Calculate our problem range
+        self.start_index = worker_id * problems_per_worker
+        self.end_index = self.start_index + problems_per_worker
+
+        logger.info(
+            "StaticProblemAllocator: worker=%d, range=[%d, %d), %d problems/window",
+            worker_id,
+            self.start_index,
+            self.end_index,
+            problems_per_worker,
+        )
+
+    def claim_next_problem(self, window: int, max_attempts: int = MAX_PROBLEMS_PER_WINDOW) -> int:
+        """
+        Return the next pre-allocated problem index for this worker.
+
+        No actual "claiming" happens - just returns the next index in our range.
+
+        Args:
+            window: Window start block number
+            max_attempts: Ignored (for interface compatibility)
+
+        Returns:
+            The next problem index, or -1 if range exhausted
+        """
+        # Reset position if window changed
+        if self._current_window != window:
+            self._current_window = window
+            self._next_index = 0
+            logger.debug(
+                "Worker %d: starting new window %d, range [%d, %d)",
+                self.worker_id,
+                window,
+                self.start_index,
+                self.end_index,
+            )
+
+        # Check if we've exhausted our allocation
+        if self._next_index >= self.problems_per_worker:
+            logger.info(
+                "Worker %d: exhausted allocation (%d problems) for window %d",
+                self.worker_id,
+                self.problems_per_worker,
+                window,
+            )
+            return -1
+
+        # Return our next pre-allocated index
+        problem_index = self.start_index + self._next_index
+        self._next_index += 1
+
+        logger.debug(
+            "Worker %d: allocated problem %d (%d/%d for this window)",
+            self.worker_id,
+            problem_index,
+            self._next_index,
+            self.problems_per_worker,
+        )
+        return problem_index
+
+    def reset_counter(self, window: int) -> None:
+        """Reset for a new window. No-op for static allocation."""
+        # Just reset our internal counter
+        self._current_window = window
+        self._next_index = 0
+
+    def wait_for_leader_reset(self, window: int, timeout: float = 10.0) -> bool:
+        """Wait for leader. No-op for static allocation - always ready."""
+        return True
+
+    def get_current_count(self, window: int) -> int:
+        """Get current problem count for monitoring."""
+        if self._current_window == window:
+            return self._next_index
+        return 0
+
+    def cleanup_window(self, window: int) -> None:
+        """Clean up for a completed window. No-op for static allocation."""
+        pass
+
+
+def get_problem_allocator(
+    cache_root: Path,
+    worker_id: int,
+    total_workers: int = 8,
+) -> ProblemQueue | StaticProblemAllocator:
+    """
+    Get the appropriate problem allocator based on configuration.
+
+    If GRAIL_STATIC_ALLOCATION is set, returns StaticProblemAllocator.
+    Otherwise returns ProblemQueue (dynamic claiming).
+
+    Args:
+        cache_root: Cache root directory
+        worker_id: This worker's ID
+        total_workers: Total number of workers
+
+    Returns:
+        Problem allocator instance
+    """
+    if STATIC_ALLOCATION_ENABLED:
+        logger.info(
+            "Using STATIC allocation: %d problems/worker, worker %d/%d",
+            PROBLEMS_PER_WORKER,
+            worker_id,
+            total_workers,
+        )
+        return StaticProblemAllocator(worker_id, total_workers, PROBLEMS_PER_WORKER)
+
+    logger.info(
+        "Using DYNAMIC allocation (file-based claiming), worker %d/%d",
+        worker_id,
+        total_workers,
+    )
+    return ProblemQueue(cache_root, worker_id)
