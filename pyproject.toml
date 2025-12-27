@@ -75,9 +75,12 @@ experiments = [
     "notebook>=6.4.0",
     "seaborn>=0.11.0",
 ]
+multiserver = [
+    "redis>=5.0.0",  # Cross-server problem queue coordination
+]
 
 all = [
-    "grail[dev,experiments,quantization]",
+    "grail[dev,experiments,quantization,multiserver]",
 ]
 
 [project.scripts]

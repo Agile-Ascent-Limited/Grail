@@ -21,7 +21,8 @@ from ..environments.loop import AgentEnvLoop
 from ..grail import derive_env_seed
 from ..infrastructure.comms import sink_window_inferences
 from ..infrastructure.drand import get_drand_beacon
-from ..infrastructure.worker_barrier import ProblemQueue, WorkerBarrier
+from ..infrastructure.redis_problem_queue import get_problem_queue
+from ..infrastructure.worker_barrier import WorkerBarrier
 from ..infrastructure.worker_config import WorkerConfig, log_multi_gpu_setup
 from ..shared.constants import (
     BLOCK_TIME_SECONDS,
@@ -607,8 +608,9 @@ async def generate_rollouts_for_window(
 
     # Initialize shared problem queue for gap-free distribution
     # Workers atomically claim problems instead of round-robin, ensuring no gaps
+    # Uses Redis if GRAIL_REDIS_URL is set (for cross-server coordination)
     cache_root = worker_config.cache_root if hasattr(worker_config, 'cache_root') else os.path.expanduser("~/.cache/grail")
-    problem_queue = ProblemQueue(cache_root, worker_config.worker_id)
+    problem_queue = get_problem_queue(cache_root, worker_config.worker_id, worker_config.total_workers)
 
     # Initialize barrier for block sharing (leader shares block, followers read)
     barrier = WorkerBarrier(cache_root, worker_config.worker_id, worker_config.total_workers)

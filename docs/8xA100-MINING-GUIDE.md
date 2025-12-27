@@ -232,7 +232,9 @@ GRAIL_GENERATION_BATCH_SIZE=8
 # Datacenter: 1000-10000, Home: 50-200
 GRAIL_UPLOAD_BANDWIDTH_MBPS=1000
 
-# Checkpoint cache directory (use fast NVMe if available)
+# Checkpoint cache directory (default: ~/.cache/grail)
+# Set to fast NVMe/SSD for faster checkpoint loading (10-20GB per checkpoint)
+# Cloud examples: /ephemeral/grail, /nvme/grail, /local/grail
 GRAIL_CACHE_DIR=/var/cache/grail
 
 # =============================================================================
@@ -1259,6 +1261,65 @@ With 8x A100 80GB running the 4B model:
 - Scores are normalized against `cap^exponent` for weight calculation
 
 **More workers = exponentially higher score.**
+
+---
+
+## Multi-Server Coordination (Optional)
+
+If you're running the **same hotkey across multiple servers**, you need to coordinate which problems each server claims to avoid duplicate work. By default, each server claims problems 0, 1, 2... independently, leading to wasted compute.
+
+### Redis-Based Problem Queue
+
+Use Redis for atomic problem claiming across servers:
+
+```bash
+# 1. Install Redis support
+uv pip install redis
+
+# 2. Run a Redis server (or use managed Redis like ElastiCache)
+# Simple local Redis:
+docker run -d --name grail-redis -p 6379:6379 redis:7-alpine
+
+# 3. Configure all servers to use the same Redis
+export GRAIL_REDIS_URL=redis://your-redis-host:6379/0
+
+# Optional: unique server ID for debugging
+export GRAIL_SERVER_ID=server-1
+```
+
+Add to your `.env` on all servers:
+```bash
+GRAIL_REDIS_URL=redis://redis-host:6379/0
+```
+
+### How It Works
+
+Without Redis (default):
+```
+Server A claims: 0, 1, 2, 3...
+Server B claims: 0, 1, 2, 3...  # Duplicates!
+```
+
+With Redis:
+```
+Server A claims: 0, 2, 4, 6...  # Atomic INCR
+Server B claims: 1, 3, 5, 7...  # No duplicates
+```
+
+Redis uses a simple `INCR` command which is atomic across all clients. Latency is ~1ms per claim, negligible compared to ~1-2s generation time.
+
+### Requirements
+
+- Redis server accessible from all mining servers
+- Same `GRAIL_REDIS_URL` on all servers
+- Same hotkey on all servers (otherwise they're independent anyway)
+
+### Fallback
+
+If Redis is unavailable, miners automatically fall back to file-based claiming (single-server mode). You'll see a warning in logs:
+```
+Failed to connect to Redis, falling back to file-based
+```
 
 ---
 

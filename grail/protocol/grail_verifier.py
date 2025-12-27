@@ -313,10 +313,12 @@ class GRAILVerifier:
         # Step 3: Batched sketch computation via matrix-vector multiply
         # all_buckets: [seq_len, topk], r_vec: [topk]
         # Result: [seq_len]
-        r_vec_int32 = r_vec.to(torch.int32).to(device)
+        # NOTE: CUDA doesn't support int32 matmul, so we use float32 which gives
+        # exact results for our small integer values (buckets in [-16,16], r_vec in [-127,127])
+        r_vec_float = r_vec.to(torch.float32).to(device)
         all_sketches = torch.matmul(
-            all_buckets.to(device), r_vec_int32
-        )  # [seq_len]
+            all_buckets.to(torch.float32).to(device), r_vec_float
+        ).to(torch.int64)  # [seq_len]
 
         # Apply modulo PRIME_Q
         all_sketch_vals = (all_sketches % PRIME_Q).tolist()
