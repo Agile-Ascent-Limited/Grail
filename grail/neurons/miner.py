@@ -555,7 +555,12 @@ class MinerNeuron(BaseNeuron):
                     )
 
                     if not await has_time_for_next_generation(subtensor, timers, window_start):
-                        last_window_start = window_start
+                        # Only leader marks window as done when skipping due to time.
+                        # Followers should NOT mark done - they need to stay in sync with leader.
+                        # If follower marks done here (e.g., after waiting for checkpoint sync),
+                        # they'll jump to waiting for next window while leader is still mining current.
+                        if barrier.is_leader:
+                            last_window_start = window_start
                         await asyncio.sleep(5)
                         continue
 
@@ -856,6 +861,11 @@ class MinerNeuron(BaseNeuron):
                                 )
                                 # Don't update last_window_start - let next iteration handle it
                                 continue
+                            # Follower with no inferences should NOT mark window as done.
+                            # Let them retry the same window instead of jumping ahead.
+                            # This prevents followers from waiting for next window while
+                            # leader is still mining current window.
+                            continue
 
                     last_window_start = window_start
 
