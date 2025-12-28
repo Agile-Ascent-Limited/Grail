@@ -566,36 +566,8 @@ class MinerNeuron(BaseNeuron):
                         abort_check=abort_check,
                     )
 
-                    # PREFETCH: Leader starts background checkpoint download for NEXT window
-                    # This runs in parallel with staging/upload so checkpoint is ready when
-                    # next window starts (saves 60+ seconds of reconstruction time)
-                    if barrier.is_leader:
-                        next_window = window_start + WINDOW_LENGTH
-
-                        async def _prefetch_next_checkpoint():
-                            """Background task to prefetch checkpoint for next window."""
-                            try:
-                                # Discover latest ready checkpoint for next window
-                                next_ckpt = await checkpoint_manager.get_latest_ready_checkpoint(
-                                    next_window
-                                )
-                                if next_ckpt is not None and next_ckpt != current_checkpoint_window:
-                                    logger.info(
-                                        f"🔮 Prefetching checkpoint {next_ckpt} for next window {next_window}..."
-                                    )
-                                    # NOTE: Do NOT signal downloading here - prefetch is for NEXT window.
-                                    # Signaling would trigger followers' abort_check and discard their rollouts.
-                                    # Download and reconstruct (this is the slow part)
-                                    ckpt_path = await checkpoint_manager.get_checkpoint(next_ckpt)
-                                    if ckpt_path:
-                                        barrier.update_checkpoint(str(ckpt_path), next_ckpt)
-                                        logger.info(
-                                            f"✅ Prefetched checkpoint {next_ckpt} ready at {ckpt_path}"
-                                        )
-                            except Exception as e:
-                                logger.debug(f"Prefetch failed (non-critical): {e}")
-
-                        prefetch_task = asyncio.create_task(_prefetch_next_checkpoint())
+                    # Prefetch task will be started AFTER upload completes (see below)
+                    prefetch_task = None
 
                     if inferences:
                         # Multi-worker aggregation: all workers stage locally,
@@ -670,6 +642,32 @@ class MinerNeuron(BaseNeuron):
 
                                 # Cleanup staging files
                                 rollout_staging.cleanup_window(window_start)
+
+                                # PREFETCH: Now that upload is complete, start background
+                                # checkpoint download for NEXT window. This runs while we wait
+                                # for the next window, so checkpoint is ready when mining starts.
+                                next_window = window_start + WINDOW_LENGTH
+
+                                async def _prefetch_next_checkpoint():
+                                    """Background task to prefetch checkpoint for next window."""
+                                    try:
+                                        next_ckpt = await checkpoint_manager.get_latest_ready_checkpoint(
+                                            next_window
+                                        )
+                                        if next_ckpt is not None and next_ckpt != current_checkpoint_window:
+                                            logger.info(
+                                                f"🔮 Prefetching checkpoint {next_ckpt} for next window {next_window}..."
+                                            )
+                                            ckpt_path = await checkpoint_manager.get_checkpoint(next_ckpt)
+                                            if ckpt_path:
+                                                barrier.update_checkpoint(str(ckpt_path), next_ckpt)
+                                                logger.info(
+                                                    f"✅ Prefetched checkpoint {next_ckpt} ready at {ckpt_path}"
+                                                )
+                                    except Exception as e:
+                                        logger.debug(f"Prefetch failed (non-critical): {e}")
+
+                                prefetch_task = asyncio.create_task(_prefetch_next_checkpoint())
                             else:
                                 # Follower: staging done, skip R2 upload
                                 logger.info(
@@ -710,6 +708,31 @@ class MinerNeuron(BaseNeuron):
                                 # Mark window as uploaded (single-worker mode)
                                 if rollout_staging:
                                     rollout_staging.mark_window_uploaded(window_start)
+
+                                # PREFETCH: Now that upload is complete, start background
+                                # checkpoint download for NEXT window (single-worker mode)
+                                next_window = window_start + WINDOW_LENGTH
+
+                                async def _prefetch_next_checkpoint_single():
+                                    """Background task to prefetch checkpoint for next window."""
+                                    try:
+                                        next_ckpt = await checkpoint_manager.get_latest_ready_checkpoint(
+                                            next_window
+                                        )
+                                        if next_ckpt is not None and next_ckpt != current_checkpoint_window:
+                                            logger.info(
+                                                f"🔮 Prefetching checkpoint {next_ckpt} for next window {next_window}..."
+                                            )
+                                            ckpt_path = await checkpoint_manager.get_checkpoint(next_ckpt)
+                                            if ckpt_path:
+                                                barrier.update_checkpoint(str(ckpt_path), next_ckpt)
+                                                logger.info(
+                                                    f"✅ Prefetched checkpoint {next_ckpt} ready at {ckpt_path}"
+                                                )
+                                    except Exception as e:
+                                        logger.debug(f"Prefetch failed (non-critical): {e}")
+
+                                prefetch_task = asyncio.create_task(_prefetch_next_checkpoint_single())
 
                             except Exception as e:
                                 logger.error(f"❌ Failed to upload window {window_start}: {e}")
