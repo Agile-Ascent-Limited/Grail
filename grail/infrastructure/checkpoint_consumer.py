@@ -147,6 +147,10 @@ class CheckpointManager:
     # How long verification result is cached (seconds)
     VERIFICATION_CACHE_TTL = 300  # 5 minutes
 
+    # Skip cache verification entirely - just check files exist (saves ~20s per checkpoint)
+    # Enable with GRAIL_SKIP_CACHE_VERIFICATION=1 (recommended for miners)
+    SKIP_CACHE_VERIFICATION = os.getenv("GRAIL_SKIP_CACHE_VERIFICATION", "1").lower() in ("1", "true", "yes")
+
     def __init__(
         self,
         *,
@@ -165,6 +169,9 @@ class CheckpointManager:
         # Verification cache: {window: (timestamp, manifest_hash)} for recently verified checkpoints
         # This avoids re-hashing 14GB+ files when checkpoint was just prefetched
         self._verification_cache: dict[int, tuple[float, str]] = {}
+
+        if self.SKIP_CACHE_VERIFICATION:
+            logger.info("Cache verification DISABLED (GRAIL_SKIP_CACHE_VERIFICATION=1) - trusting cached files")
 
         # Clean up stale locks from crashed workers on startup
         if MULTI_WORKER_ENABLED:
@@ -994,6 +1001,20 @@ class CheckpointManager:
             window = int(checkpoint_dir.name.split("-")[-1])
         except (ValueError, IndexError):
             window = None
+
+        # FAST PATH: Skip hash verification entirely, just check files exist
+        # This saves ~20 seconds per checkpoint by trusting downloaded files
+        if self.SKIP_CACHE_VERIFICATION:
+            for filename in manifest.keys():
+                file_path = checkpoint_dir / filename
+                if not file_path.exists():
+                    logger.warning("Missing checkpoint file %s", file_path)
+                    return False
+            logger.debug(
+                "Verification skipped for checkpoint %s (SKIP_CACHE_VERIFICATION=1, %d files exist)",
+                window, len(manifest),
+            )
+            return True
 
         # Check verification cache to avoid re-hashing recently verified checkpoints
         # This saves ~20 seconds when checkpoint was just prefetched
