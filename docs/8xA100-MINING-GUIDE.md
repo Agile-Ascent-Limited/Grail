@@ -1372,36 +1372,58 @@ Typically, choose the node with the best network connection to R2.
 
 #### Step 2: Install Redis on Hub
 
+**Option A: Ubuntu/Debian (Native - Recommended)**
+
 ```bash
-# On the HUB node only
-# Option A: Docker (recommended)
+# Install Redis
+apt-get update && apt-get install -y redis-server
+
+# Configure Redis for multi-node access
+# Edit /etc/redis/redis.conf with these settings:
+sed -i 's/^bind 127.0.0.1.*/bind 0.0.0.0/' /etc/redis/redis.conf
+sed -i 's/^protected-mode yes/protected-mode no/' /etc/redis/redis.conf
+
+# Optional: Change port (default 6379)
+# sed -i 's/^port 6379/port 6380/' /etc/redis/redis.conf
+
+# Enable persistence (recommended)
+sed -i 's/^# appendonly no/appendonly yes/' /etc/redis/redis.conf
+
+# Enable and start Redis
+systemctl enable redis-server
+systemctl restart redis-server
+
+# Verify Redis is running and accessible
+redis-cli ping   # Should return "PONG"
+
+# If using a custom port:
+# redis-cli -p 6380 ping
+```
+
+**Option B: Docker**
+
+```bash
 docker run -d --name grail-redis \
   -p 6379:6379 \
   --restart unless-stopped \
   redis:7-alpine redis-server --appendonly yes
 
-# Option B: System package (Ubuntu/Debian)
-apt-get update && apt-get install -y redis-server
-systemctl enable redis-server
-systemctl start redis-server
-
-# Verify Redis is running
-redis-cli ping   # Should return "PONG"
-```
-
-**Security Note:** By default, Redis binds to localhost. To allow connections from other nodes:
-
-```bash
-# Edit Redis config (Docker)
+# Allow external connections
 docker exec -it grail-redis redis-cli CONFIG SET bind "0.0.0.0"
 docker exec -it grail-redis redis-cli CONFIG SET protected-mode "no"
-
-# Or for system Redis, edit /etc/redis/redis.conf:
-# bind 0.0.0.0
-# protected-mode no
 ```
 
-For production, use Redis AUTH password or a private network.
+**Firewall Configuration:**
+
+```bash
+# Allow Redis port through firewall
+ufw allow 6379/tcp
+
+# Or for custom port:
+# ufw allow 6380/tcp
+```
+
+**Note:** These settings disable authentication for simplicity on private networks. For public-facing Redis, add a password with `requirepass yourpassword` in the config.
 
 #### Step 3: Install Redis Python Package on All Nodes
 
