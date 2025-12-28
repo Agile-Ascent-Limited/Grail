@@ -1,4 +1,4 @@
-// ecosystem-testing.config.js - PM2 configuration for 7x GPU mining + 1x GPU validation (test mode)
+// ecosystem-a100.config.js - PM2 configuration for 7x A100 mining + 1x A100 validation (test mode)
 // Each worker runs on its own GPU with vLLM (auto-spawned server)
 //
 // LEADER-FOLLOWER PATTERN:
@@ -9,22 +9,13 @@
 //   Validator runs on GPU 7 in --test-mode to validate your own rollouts locally.
 //   This lets you verify proofs pass before network validation.
 //
-// H200 OPTIMIZATIONS (141GB HBM3e):
-//   - GRAIL_VLLM_GPU_MEMORY_UTIL: 0.70 (70% for vLLM, leaves ~42GB for HF proof model)
+// A100 80GB OPTIMIZATIONS:
+//   - GRAIL_VLLM_GPU_MEMORY_UTIL: 0.55 (55% for vLLM = ~44GB, leaves ~36GB for HF proof model)
 //   - GRAIL_GENERATION_BATCH_SIZE: 16 (matches ROLLOUTS_PER_PROBLEM cap)
 //   - GRAIL_VLLM_MAX_NUM_SEQS: 32 (16 prompts × 2x buffer)
 //
-// PRECISION TUNING (attempting A100 compatibility):
-//   Level 1: GRAIL_PRECISION_TUNING=1
-//     - Disables TF32, enables deterministic ops, highest matmul precision
-//   Level 2: GRAIL_PRECISION_TUNING=2 (more aggressive)
-//     - All of Level 1 plus torch.use_deterministic_algorithms(True)
-//     - Forces eager attention (no flash/sdpa)
-//     - Requires CUBLAS_WORKSPACE_CONFIG=:4096:8
-//   Additional: NVIDIA_TF32_OVERRIDE=0 (system-level TF32 disable)
-//
 // SETUP:
-//   pm2 start ecosystem-testing.config.js      # Start miners + validator
+//   pm2 start ecosystem-a100.config.js      # Start miners + validator
 //
 // STOP:
 //   pm2 stop all
@@ -45,13 +36,11 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',  // A100 80GB: 55% = ~44GB for vLLM
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
-        // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
-        GRAIL_PRECISION_TUNING: '1',
       },
-      max_memory_restart: '140G',
+      max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-0-error.log',
       out_file: '/var/log/grail/worker-0-out.log',
@@ -71,13 +60,11 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
-        // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
-        GRAIL_PRECISION_TUNING: '1',
       },
-      max_memory_restart: '140G',
+      max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-1-error.log',
       out_file: '/var/log/grail/worker-1-out.log',
@@ -97,13 +84,11 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
-        // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
-        GRAIL_PRECISION_TUNING: '1',
       },
-      max_memory_restart: '140G',
+      max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-2-error.log',
       out_file: '/var/log/grail/worker-2-out.log',
@@ -123,13 +108,11 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
-        // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
-        GRAIL_PRECISION_TUNING: '1',
       },
-      max_memory_restart: '140G',
+      max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-3-error.log',
       out_file: '/var/log/grail/worker-3-out.log',
@@ -149,13 +132,11 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
-        // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
-        GRAIL_PRECISION_TUNING: '1',
       },
-      max_memory_restart: '140G',
+      max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-4-error.log',
       out_file: '/var/log/grail/worker-4-out.log',
@@ -175,13 +156,11 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
-        // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
-        GRAIL_PRECISION_TUNING: '1',
       },
-      max_memory_restart: '140G',
+      max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-5-error.log',
       out_file: '/var/log/grail/worker-5-out.log',
@@ -201,13 +180,11 @@ module.exports = {
         GRAIL_USE_VLLM: '1',
         GRAIL_USE_FLASH_ATTENTION: '0',
         GRAIL_GENERATION_BATCH_SIZE: '16',
-        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
+        GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '5',
-        // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
-        GRAIL_PRECISION_TUNING: '1',
       },
-      max_memory_restart: '140G',
+      max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/worker-6-error.log',
       out_file: '/var/log/grail/worker-6-out.log',
@@ -225,7 +202,7 @@ module.exports = {
       env: {
         CUDA_VISIBLE_DEVICES: '7',
       },
-      max_memory_restart: '140G',
+      max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       error_file: '/var/log/grail/validator-error.log',
       out_file: '/var/log/grail/validator-out.log',

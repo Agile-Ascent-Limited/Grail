@@ -34,7 +34,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
+        GRAIL_MINER_SAFETY_BLOCKS: '5',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -58,7 +58,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
+        GRAIL_MINER_SAFETY_BLOCKS: '5',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -82,7 +82,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
+        GRAIL_MINER_SAFETY_BLOCKS: '5',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -106,7 +106,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
+        GRAIL_MINER_SAFETY_BLOCKS: '5',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -130,7 +130,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
+        GRAIL_MINER_SAFETY_BLOCKS: '5',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -154,7 +154,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
+        GRAIL_MINER_SAFETY_BLOCKS: '5',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -178,7 +178,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
+        GRAIL_MINER_SAFETY_BLOCKS: '5',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -202,7 +202,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '1',  // Aggressive buffer: 1 block = ~12s
+        GRAIL_MINER_SAFETY_BLOCKS: '5',  // Aggressive buffer: 1 block = ~12s
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
