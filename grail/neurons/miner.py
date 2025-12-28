@@ -10,6 +10,30 @@ from types import SimpleNamespace
 import bittensor as bt
 import torch
 
+# ============================================================================
+# PRECISION SETTINGS FOR CROSS-GPU COMPATIBILITY
+# These settings help ensure floating point consistency across GPU architectures
+# (A100, H100, H200, RTX 4090, etc.) by disabling GPU-specific optimizations
+# that can cause minor numerical differences.
+# ============================================================================
+_ENABLE_PRECISION_TUNING = os.getenv("GRAIL_PRECISION_TUNING", "0").lower() in ("1", "true", "yes")
+if _ENABLE_PRECISION_TUNING:
+    # Disable TF32 - uses 19-bit precision instead of 23-bit, causes drift
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
+    # Force deterministic operations where possible
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # Use highest precision for matrix multiplications
+    torch.set_float32_matmul_precision('highest')
+
+    # Log that precision tuning is active
+    logging.getLogger(__name__).info(
+        "PRECISION TUNING ENABLED: TF32=disabled, deterministic=True, matmul_precision=highest"
+    )
+
 from grail.cli.mine import (
     MiningTimers,
     generate_rollouts_for_window,

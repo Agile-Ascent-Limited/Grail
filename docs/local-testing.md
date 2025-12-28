@@ -1,0 +1,117 @@
+# Local Testing Guide
+
+This guide explains how to test your miner's proofs locally before submitting to the network.
+
+## Overview
+
+Running a validator in `--test-mode` alongside your miner lets you:
+- Verify proofs pass before waiting for network validation
+- Debug precision issues across GPU architectures
+- Test code changes without risking failed submissions
+
+## Prerequisites
+
+- Same `.env` file configured for both miner and validator
+- At least 2 GPUs (one for each) or run sequentially
+- Checkpoint cache populated
+
+## Quick Start
+
+### Terminal 1 - Run Miner
+```bash
+CUDA_VISIBLE_DEVICES=0 grail mine
+```
+
+### Terminal 2 - Run Validator (Test Mode)
+```bash
+CUDA_VISIBLE_DEVICES=1 grail validate --test-mode
+```
+
+The `--test-mode` flag makes the validator only check your own uploaded rollouts.
+
+## Testing Precision Tuning
+
+If you're running on non-A100 GPUs (H100, H200, RTX 4090, etc.), enable precision tuning:
+
+```bash
+# Miner with precision tuning
+CUDA_VISIBLE_DEVICES=0 GRAIL_PRECISION_TUNING=1 grail mine
+
+# Validator
+CUDA_VISIBLE_DEVICES=1 grail validate --test-mode
+```
+
+### What Precision Tuning Does
+
+When `GRAIL_PRECISION_TUNING=1`:
+- Disables TF32 (19-bit precision that causes drift)
+- Enables deterministic CUDA operations
+- Uses highest precision for matrix multiplications
+
+This helps match A100 floating point behavior on other GPU architectures.
+
+## Interpreting Results
+
+### Success
+```
+[proof_valid] SUCCESS | seq_len=XXX | verified_positions=16
+```
+
+### Failure - Sketch Mismatch
+```
+[proof_valid] Commitment verification FAILED at position X | sketch_diff=89 | tolerance=77
+```
+
+If `sketch_diff > tolerance`, the proof fails. Common causes:
+1. **Checkpoint mismatch** - Miner and validator have different weights
+2. **GPU precision** - Different architectures produce different floats
+3. **Code bug** - Hidden state extraction differs
+
+## Diagnostic Scripts
+
+### 1. Verify Proof Locally
+Tests miner vs validator hidden state extraction:
+```bash
+python scripts/verify_proof_locally.py --checkpoint /path/to/checkpoint
+```
+
+### 2. Debug Specific Rollout
+Analyzes an actual rollout file:
+```bash
+python scripts/debug_proof_mismatch.py --latest --checkpoint /path/to/checkpoint
+```
+
+### 3. Check Checkpoint Integrity
+Verifies checkpoint weights hash:
+```bash
+python scripts/check_checkpoint.py --checkpoint /path/to/checkpoint
+```
+
+## Environment Variables
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `GRAIL_PRECISION_TUNING` | Cross-GPU float compatibility | `0` |
+| `CUDA_VISIBLE_DEVICES` | GPU assignment | all |
+
+## Troubleshooting
+
+### Proofs pass locally but fail on network
+- GPU architecture difference between your machine and network validator
+- Try `GRAIL_PRECISION_TUNING=1`
+- Consider using A100 GPUs (explicitly recommended in docs)
+
+### Proofs fail locally
+- Check checkpoint window matches between miner and validator
+- Run `check_checkpoint.py` to verify weights integrity
+- Check logs for "CHECKPOINT WINDOW MISMATCH"
+
+### Out of memory
+- Run miner and validator sequentially instead of parallel
+- Reduce `GRAIL_GENERATION_BATCH_SIZE`
+
+## Notes
+
+- Both miner and validator use the same `.env` configuration
+- They share the checkpoint cache directory
+- `--test-mode` only validates your own UID's files
