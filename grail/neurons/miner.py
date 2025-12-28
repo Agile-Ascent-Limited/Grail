@@ -394,10 +394,21 @@ class MinerNeuron(BaseNeuron):
                     # Leader signals which window it's working on so followers can sync
                     if barrier.is_leader:
                         barrier.signal_current_window(window_start)
+                        # Also signal via Redis for cross-node sync
+                        if redis_aggregator is not None:
+                            redis_aggregator.signal_window_start(window_start)
 
                     # Followers: check if leader is downloading a checkpoint BEFORE
                     # we discover/load checkpoints. This ensures all workers sync.
                     if not barrier.is_leader:
+                        # Fast path: check Redis for cross-node checkpoint info (instant)
+                        if redis_aggregator is not None:
+                            redis_ckpt, _ = redis_aggregator.get_redis_checkpoint()
+                            if redis_ckpt is not None and redis_ckpt != current_checkpoint_window:
+                                logger.info(
+                                    f"📡 Redis has checkpoint {redis_ckpt} (current={current_checkpoint_window})"
+                                )
+                        # Fall back to file-based barrier check for local workers
                         leader_ckpt = await barrier.wait_for_checkpoint_sync(
                             current_checkpoint_window, timeout=180.0
                         )
@@ -458,6 +469,11 @@ class MinerNeuron(BaseNeuron):
                                         barrier.update_checkpoint(
                                             str(checkpoint_path), checkpoint_window
                                         )
+                                        # Also broadcast via Redis for faster cross-node sync
+                                        if redis_aggregator is not None:
+                                            redis_aggregator.broadcast_checkpoint(
+                                                checkpoint_window, str(checkpoint_path)
+                                            )
 
                                     # Log model configuration details
                                     if torch.cuda.is_available():

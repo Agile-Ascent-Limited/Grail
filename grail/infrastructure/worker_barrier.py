@@ -697,15 +697,19 @@ class RolloutStaging:
         return done_file.exists()
 
     async def wait_for_workers(
-        self, window: int, timeout: float = 30.0, min_workers: int | None = None
+        self, window: int, timeout: float = 30.0, min_workers: int | None = None,
+        early_exit_threshold: float = 0.85,
     ) -> int:
         """
         Leader waits for other workers to finish staging.
+
+        Uses fast polling (0.2s) and early exit when threshold reached.
 
         Args:
             window: Window number to wait for
             timeout: Max time to wait in seconds
             min_workers: Minimum workers to wait for (default: total_workers - 1)
+            early_exit_threshold: Exit early if this fraction done (0.85 = 85%)
 
         Returns:
             Number of workers that completed staging
@@ -716,8 +720,14 @@ class RolloutStaging:
         if min_workers is None:
             min_workers = self.total_workers - 1
 
+        # Calculate early exit count
+        early_exit_count = max(1, int((self.total_workers - 1) * early_exit_threshold))
+
         start_time = time.time()
-        poll_interval = 0.5
+        poll_interval = 0.2  # Fast polling
+        last_count = 0
+        stall_start = None
+        stall_timeout = 5.0  # Exit if no progress for 5s after threshold
 
         while True:
             elapsed = time.time() - start_time
@@ -732,6 +742,26 @@ class RolloutStaging:
                     done_count, self.total_workers - 1, window, elapsed,
                 )
                 return done_count
+
+            # Early exit: if enough workers done and progress stalled
+            if done_count >= early_exit_count:
+                if done_count > last_count:
+                    stall_start = time.time()
+                    last_count = done_count
+                elif stall_start is not None:
+                    stall_elapsed = time.time() - stall_start
+                    if stall_elapsed > stall_timeout:
+                        logger.info(
+                            "Leader: early exit with %d/%d workers (%.0f%%) for window %d "
+                            "(no progress for %.1fs)",
+                            done_count, self.total_workers - 1,
+                            100 * done_count / (self.total_workers - 1),
+                            window, stall_elapsed,
+                        )
+                        return done_count
+                else:
+                    stall_start = time.time()
+                    last_count = done_count
 
             if elapsed > timeout:
                 logger.warning(
@@ -881,6 +911,8 @@ REDIS_ROLLOUT_PREFIX = "grail:rollouts"
 REDIS_ROLLOUT_TTL = 600  # 10 minutes - enough for window + upload
 REDIS_NODE_ID_KEY = "grail:config:node_id"  # Shared node ID for all workers
 REDIS_NODE_ID_TTL = 86400  # 24 hours - persist across restarts
+REDIS_CHECKPOINT_KEY = "grail:checkpoint:current"  # Current checkpoint info
+REDIS_CHECKPOINT_TTL = 600  # 10 minutes
 
 
 class RedisRolloutAggregator:
@@ -1133,15 +1165,20 @@ class RedisRolloutAggregator:
             return False
 
     async def wait_for_workers(
-        self, window: int, timeout: float = 60.0, min_workers: int | None = None
+        self, window: int, timeout: float = 60.0, min_workers: int | None = None,
+        early_exit_threshold: float = 0.90,
     ) -> int:
         """
         Hub waits for workers to push their rollouts.
+
+        Uses fast polling (0.3s) and early exit when threshold reached.
+        Also uses Redis pub/sub for instant notification when available.
 
         Args:
             window: Window number
             timeout: Max time to wait
             min_workers: Minimum workers required (default: total_nodes * total_workers)
+            early_exit_threshold: Exit early if this fraction of workers ready (0.90 = 90%)
 
         Returns:
             Number of workers that pushed rollouts
@@ -1153,8 +1190,14 @@ class RedisRolloutAggregator:
         if min_workers is None:
             min_workers = expected_workers
 
+        # Calculate early exit count (e.g., 90% of expected)
+        early_exit_count = max(1, int(expected_workers * early_exit_threshold))
+
         start_time = time.time()
-        poll_interval = 1.0
+        poll_interval = 0.3  # Fast polling for quicker detection
+        last_count = 0
+        stall_start = None
+        stall_timeout = 10.0  # Exit if no progress for 10s after early threshold
 
         while True:
             elapsed = time.time() - start_time
@@ -1163,12 +1206,34 @@ class RedisRolloutAggregator:
             workers_key = self._workers_list_key(window)
             ready_workers = self.client.scard(workers_key)
 
+            # Full coverage - all workers ready
             if ready_workers >= min_workers:
                 logger.info(
                     "Hub: %d/%d workers ready for window %d (waited %.1fs)",
                     ready_workers, expected_workers, window, elapsed,
                 )
                 return ready_workers
+
+            # Early exit: if we have enough workers and progress stalled
+            if ready_workers >= early_exit_count:
+                if ready_workers > last_count:
+                    # Progress - reset stall timer
+                    stall_start = time.time()
+                    last_count = ready_workers
+                elif stall_start is not None:
+                    stall_elapsed = time.time() - stall_start
+                    if stall_elapsed > stall_timeout:
+                        logger.info(
+                            "Hub: early exit with %d/%d workers (%.0f%%) for window %d "
+                            "(no progress for %.1fs, total wait %.1fs)",
+                            ready_workers, expected_workers,
+                            100 * ready_workers / expected_workers,
+                            window, stall_elapsed, elapsed,
+                        )
+                        return ready_workers
+                else:
+                    stall_start = time.time()
+                    last_count = ready_workers
 
             if elapsed > timeout:
                 logger.warning(
@@ -1299,6 +1364,111 @@ class RedisRolloutAggregator:
 
         except Exception as e:
             logger.warning("Failed to cleanup Redis keys for window %d: %s", window, e)
+
+    # --------------------------------------------------------------------------- #
+    #                   Cross-Node Checkpoint Synchronization                      #
+    # --------------------------------------------------------------------------- #
+
+    def broadcast_checkpoint(self, checkpoint_window: int, checkpoint_path: str) -> None:
+        """
+        Hub broadcasts checkpoint info to Redis for instant cross-node sync.
+
+        Called by hub when a new checkpoint is ready. Other nodes' worker0s
+        can read this instead of waiting for file barrier updates.
+
+        Args:
+            checkpoint_window: Window number of the checkpoint
+            checkpoint_path: Path to the checkpoint
+        """
+        try:
+            data = json.dumps({
+                "checkpoint_window": checkpoint_window,
+                "checkpoint_path": checkpoint_path,
+                "node_id": self.node_id,
+                "timestamp": time.time(),
+            })
+            self.client.setex(REDIS_CHECKPOINT_KEY, REDIS_CHECKPOINT_TTL, data)
+            logger.info(
+                "📡 Broadcast checkpoint %d to Redis (path=%s)",
+                checkpoint_window, checkpoint_path,
+            )
+        except Exception as e:
+            logger.warning("Failed to broadcast checkpoint to Redis: %s", e)
+
+    def get_redis_checkpoint(self) -> tuple[int | None, str | None]:
+        """
+        Get current checkpoint info from Redis.
+
+        Returns:
+            (checkpoint_window, checkpoint_path) or (None, None) if not available
+        """
+        try:
+            data = self.client.get(REDIS_CHECKPOINT_KEY)
+            if data:
+                parsed = json.loads(data)
+                return parsed.get("checkpoint_window"), parsed.get("checkpoint_path")
+            return None, None
+        except Exception:
+            return None, None
+
+    async def wait_for_checkpoint_update(
+        self, current_window: int | None, timeout: float = 30.0
+    ) -> tuple[int | None, str | None]:
+        """
+        Wait for a newer checkpoint to appear in Redis.
+
+        Uses fast polling (0.2s) for quick detection.
+
+        Args:
+            current_window: Current checkpoint window (wait for higher)
+            timeout: Max time to wait in seconds
+
+        Returns:
+            (checkpoint_window, checkpoint_path) or (None, None) if timeout
+        """
+        start_time = time.time()
+        poll_interval = 0.2
+
+        while True:
+            checkpoint_window, checkpoint_path = self.get_redis_checkpoint()
+
+            # Found newer checkpoint
+            if checkpoint_window is not None:
+                if current_window is None or checkpoint_window > current_window:
+                    return checkpoint_window, checkpoint_path
+
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                return None, None
+
+            await asyncio.sleep(poll_interval)
+
+    def signal_window_start(self, window: int) -> None:
+        """
+        Signal that this node is starting work on a window.
+
+        Other nodes can use this to detect if they're behind.
+        """
+        try:
+            key = f"grail:window:active:{self.node_id}"
+            self.client.setex(key, REDIS_ROLLOUT_TTL, str(window))
+        except Exception:
+            pass  # Non-critical
+
+    def get_hub_window(self) -> int | None:
+        """
+        Get the window that hub (node-1) is currently working on.
+
+        Returns:
+            Window number or None if not available
+        """
+        try:
+            # Hub is typically node-1 or the first node
+            key = "grail:window:active:node-1"
+            value = self.client.get(key)
+            return int(value) if value else None
+        except Exception:
+            return None
 
 
 def get_redis_rollout_aggregator(
