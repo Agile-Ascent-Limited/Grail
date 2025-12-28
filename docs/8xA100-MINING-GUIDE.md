@@ -1386,8 +1386,9 @@ sed -i 's/^protected-mode yes/protected-mode no/' /etc/redis/redis.conf
 # Optional: Change port (default 6379)
 # sed -i 's/^port 6379/port 6380/' /etc/redis/redis.conf
 
-# Enable persistence (recommended)
-sed -i 's/^# appendonly no/appendonly yes/' /etc/redis/redis.conf
+# Disable persistence (not needed - data is transient with 600s TTL)
+sed -i 's/^appendonly yes/appendonly no/' /etc/redis/redis.conf
+sed -i 's/^save /#save /' /etc/redis/redis.conf
 
 # Enable and start Redis
 systemctl enable redis-server
@@ -1406,7 +1407,7 @@ redis-cli ping   # Should return "PONG"
 docker run -d --name grail-redis \
   -p 6379:6379 \
   --restart unless-stopped \
-  redis:7-alpine redis-server --appendonly yes
+  redis:7-alpine redis-server --save "" --appendonly no
 
 # Allow external connections
 docker exec -it grail-redis redis-cli CONFIG SET bind "0.0.0.0"
