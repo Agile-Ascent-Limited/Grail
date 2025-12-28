@@ -59,12 +59,28 @@ CUDA_VISIBLE_DEVICES=1 grail -vv validate --test-mode
 
 ### What Precision Tuning Does
 
-When `GRAIL_PRECISION_TUNING=1`:
+**Level 1** (`GRAIL_PRECISION_TUNING=1`):
 - Disables TF32 (19-bit precision that causes drift)
 - Enables deterministic CUDA operations
 - Uses highest precision for matrix multiplications
 
-This helps match A100 floating point behavior on other GPU architectures.
+**Level 2** (`GRAIL_PRECISION_TUNING=2`) - More aggressive:
+- All of Level 1, plus:
+- `torch.use_deterministic_algorithms(True)`
+- Forces eager attention (no flash/sdpa optimizations)
+- Requires: `CUBLAS_WORKSPACE_CONFIG=:4096:8`
+- Optional: `NVIDIA_TF32_OVERRIDE=0` (system-level)
+
+```bash
+# Level 2 example
+CUDA_VISIBLE_DEVICES=0 \
+  GRAIL_PRECISION_TUNING=2 \
+  CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+  NVIDIA_TF32_OVERRIDE=0 \
+  grail mine
+```
+
+This helps match A100 floating point behavior on other GPU architectures, but may not fully bridge the gap due to fundamental hardware differences.
 
 ## Interpreting Results
 
@@ -107,7 +123,10 @@ python scripts/check_checkpoint.py --checkpoint /path/to/checkpoint
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `GRAIL_PRECISION_TUNING` | Cross-GPU float compatibility | `0` |
+| `GRAIL_PRECISION_TUNING` | Cross-GPU float compatibility (1=basic, 2=aggressive) | `0` |
+| `CUBLAS_WORKSPACE_CONFIG` | Required for Level 2 determinism | unset |
+| `NVIDIA_TF32_OVERRIDE` | System-level TF32 disable | unset |
+| `GRAIL_FORCE_EAGER_ATTENTION` | Force eager attention (auto with Level 2) | `0` |
 | `CUDA_VISIBLE_DEVICES` | GPU assignment | all |
 
 ## Troubleshooting

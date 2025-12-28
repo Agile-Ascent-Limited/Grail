@@ -15,8 +15,20 @@ import torch
 # These settings help ensure floating point consistency across GPU architectures
 # (A100, H100, H200, RTX 4090, etc.) by disabling GPU-specific optimizations
 # that can cause minor numerical differences.
+#
+# Level 1 (GRAIL_PRECISION_TUNING=1): Basic precision tuning
+#   - Disables TF32, enables deterministic ops, highest matmul precision
+#
+# Level 2 (GRAIL_PRECISION_TUNING=2): Aggressive precision tuning
+#   - All of Level 1 plus:
+#   - torch.use_deterministic_algorithms(True)
+#   - Forces eager attention (no flash/sdpa optimizations)
+#   - Requires CUBLAS_WORKSPACE_CONFIG=:4096:8 environment variable
 # ============================================================================
-_ENABLE_PRECISION_TUNING = os.getenv("GRAIL_PRECISION_TUNING", "0").lower() in ("1", "true", "yes")
+_PRECISION_LEVEL = os.getenv("GRAIL_PRECISION_TUNING", "0")
+_ENABLE_PRECISION_TUNING = _PRECISION_LEVEL.lower() in ("1", "2", "true", "yes")
+_AGGRESSIVE_PRECISION = _PRECISION_LEVEL == "2"
+
 if _ENABLE_PRECISION_TUNING:
     # Disable TF32 - uses 19-bit precision instead of 23-bit, causes drift
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -29,10 +41,26 @@ if _ENABLE_PRECISION_TUNING:
     # Use highest precision for matrix multiplications
     torch.set_float32_matmul_precision('highest')
 
-    # Log that precision tuning is active
-    logging.getLogger(__name__).info(
-        "PRECISION TUNING ENABLED: TF32=disabled, deterministic=True, matmul_precision=highest"
-    )
+    if _AGGRESSIVE_PRECISION:
+        # Level 2: Most aggressive determinism
+        # NOTE: Requires CUBLAS_WORKSPACE_CONFIG=:4096:8 or :16:8 to be set
+        try:
+            torch.use_deterministic_algorithms(True)
+            # Force eager attention by setting environment variable
+            os.environ["GRAIL_USE_FLASH_ATTENTION"] = "0"
+            os.environ["GRAIL_FORCE_EAGER_ATTENTION"] = "1"
+            logging.getLogger(__name__).info(
+                "PRECISION TUNING LEVEL 2: deterministic_algorithms=True, eager_attention=True"
+            )
+        except RuntimeError as e:
+            logging.getLogger(__name__).warning(
+                f"Could not enable use_deterministic_algorithms: {e}. "
+                "Set CUBLAS_WORKSPACE_CONFIG=:4096:8 environment variable."
+            )
+    else:
+        logging.getLogger(__name__).info(
+            "PRECISION TUNING LEVEL 1: TF32=disabled, deterministic=True, matmul_precision=highest"
+        )
 
 from grail.cli.mine import (
     MiningTimers,

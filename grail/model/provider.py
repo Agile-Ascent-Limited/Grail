@@ -273,21 +273,28 @@ def get_model(
     attn_implementation = None
     use_cuda = device == "cuda" or device_map is not None
 
-    # Check if flash attention should be enabled (env var or explicit parameter)
-    flash_attn_env = os.getenv("GRAIL_USE_FLASH_ATTENTION", "0") == "1"
-    should_use_flash = use_flash_attention or flash_attn_env
+    # Check if eager attention is forced (for precision tuning)
+    force_eager = os.getenv("GRAIL_FORCE_EAGER_ATTENTION", "0") == "1"
 
-    if should_use_flash and use_cuda:
-        try:
-            import flash_attn  # noqa: F401
+    if force_eager:
+        attn_implementation = "eager"
+        logger.info("🎯 Using eager attention (forced for precision)")
+    else:
+        # Check if flash attention should be enabled (env var or explicit parameter)
+        flash_attn_env = os.getenv("GRAIL_USE_FLASH_ATTENTION", "0") == "1"
+        should_use_flash = use_flash_attention or flash_attn_env
 
-            attn_implementation = "flash_attention_2"
-            logger.info("⚡ Using Flash Attention 2 for optimized inference")
-        except ImportError:
-            logger.warning(
-                "flash-attn not installed; falling back to default attention. "
-                "Install with: pip install flash-attn --no-build-isolation"
-            )
+        if should_use_flash and use_cuda:
+            try:
+                import flash_attn  # noqa: F401
+
+                attn_implementation = "flash_attention_2"
+                logger.info("⚡ Using Flash Attention 2 for optimized inference")
+            except ImportError:
+                logger.warning(
+                    "flash-attn not installed; falling back to default attention. "
+                    "Install with: pip install flash-attn --no-build-isolation"
+                )
 
     # Determine dtype
     torch_dtype = torch.bfloat16 if use_cuda else torch.float32

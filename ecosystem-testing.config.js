@@ -14,8 +14,14 @@
 //   - GRAIL_GENERATION_BATCH_SIZE: 16 (matches ROLLOUTS_PER_PROBLEM cap)
 //   - GRAIL_VLLM_MAX_NUM_SEQS: 32 (16 prompts × 2x buffer)
 //
-// PRECISION TUNING:
-//   - GRAIL_PRECISION_TUNING: 1 (disables TF32, enables deterministic ops for cross-GPU compatibility)
+// PRECISION TUNING (attempting A100 compatibility):
+//   Level 1: GRAIL_PRECISION_TUNING=1
+//     - Disables TF32, enables deterministic ops, highest matmul precision
+//   Level 2: GRAIL_PRECISION_TUNING=2 (more aggressive)
+//     - All of Level 1 plus torch.use_deterministic_algorithms(True)
+//     - Forces eager attention (no flash/sdpa)
+//     - Requires CUBLAS_WORKSPACE_CONFIG=:4096:8
+//   Additional: NVIDIA_TF32_OVERRIDE=0 (system-level TF32 disable)
 //
 // SETUP:
 //   pm2 start ecosystem-testing.config.js      # Start miners + validator
@@ -42,7 +48,10 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',
-        GRAIL_PRECISION_TUNING: '1',
+        // Level 2 precision tuning for A100 compatibility attempt
+        GRAIL_PRECISION_TUNING: '2',
+        CUBLAS_WORKSPACE_CONFIG: ':4096:8',
+        NVIDIA_TF32_OVERRIDE: '0',
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -67,7 +76,9 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',
-        GRAIL_PRECISION_TUNING: '1',
+        GRAIL_PRECISION_TUNING: '2',
+        CUBLAS_WORKSPACE_CONFIG: ':4096:8',
+        NVIDIA_TF32_OVERRIDE: '0',
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -92,7 +103,9 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',
-        GRAIL_PRECISION_TUNING: '1',
+        GRAIL_PRECISION_TUNING: '2',
+        CUBLAS_WORKSPACE_CONFIG: ':4096:8',
+        NVIDIA_TF32_OVERRIDE: '0',
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -117,7 +130,9 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',
-        GRAIL_PRECISION_TUNING: '1',
+        GRAIL_PRECISION_TUNING: '2',
+        CUBLAS_WORKSPACE_CONFIG: ':4096:8',
+        NVIDIA_TF32_OVERRIDE: '0',
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -142,7 +157,9 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',
-        GRAIL_PRECISION_TUNING: '1',
+        GRAIL_PRECISION_TUNING: '2',
+        CUBLAS_WORKSPACE_CONFIG: ':4096:8',
+        NVIDIA_TF32_OVERRIDE: '0',
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -167,7 +184,9 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',
-        GRAIL_PRECISION_TUNING: '1',
+        GRAIL_PRECISION_TUNING: '2',
+        CUBLAS_WORKSPACE_CONFIG: ':4096:8',
+        NVIDIA_TF32_OVERRIDE: '0',
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
@@ -192,7 +211,9 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '1',
-        GRAIL_PRECISION_TUNING: '1',
+        GRAIL_PRECISION_TUNING: '2',
+        CUBLAS_WORKSPACE_CONFIG: ':4096:8',
+        NVIDIA_TF32_OVERRIDE: '0',
       },
       max_memory_restart: '140G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
