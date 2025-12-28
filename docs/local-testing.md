@@ -17,16 +17,31 @@ Running a validator in `--test-mode` alongside your miner lets you:
 
 ## Quick Start
 
-### Terminal 1 - Run Miner
+**Important:** Start the validator first and wait for model downloads to complete before starting miners. This ensures both use the same cached checkpoint.
+
+### Step 1 - Start Validator First (wait for downloads)
+```bash
+CUDA_VISIBLE_DEVICES=7 grail -vv validate --test-mode
+```
+
+Wait until you see:
+```
+Loading checkpoint for window XXXXX from /root/.cache/grail/checkpoints/checkpoint-XXXXX
+```
+
+The large model files (~8GB) will download to `/root/.cache/grail/checkpoints/`. Once complete, miners will reuse this cache.
+
+### Step 2 - Start Miners (after downloads complete)
+```bash
+pm2 start ecosystem-testing.config.js --only grail-miner-0,grail-miner-1,...
+```
+
+Or manually:
 ```bash
 CUDA_VISIBLE_DEVICES=0 grail mine
 ```
 
-### Terminal 2 - Run Validator (Test Mode)
-```bash
-CUDA_VISIBLE_DEVICES=1 grail -vv validate --test-mode
-```
-
+### Flags
 - `-vv` enables verbose output (recommended by subnet owner)
 - `--test-mode` makes the validator only check your own uploaded rollouts
 
