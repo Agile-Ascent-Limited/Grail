@@ -30,6 +30,10 @@ REDIS_PREFIX = "grail:problems"
 # Should be longer than a window (~6 minutes) but not too long
 CLAIM_TTL = 600  # 10 minutes
 
+# Shared node ID key (same as worker_barrier.py for consistency)
+REDIS_NODE_ID_KEY = "grail:config:node_id"
+REDIS_NODE_ID_TTL = 86400  # 24 hours
+
 # Maximum problems per window (configurable via env var)
 # Default 500 supports ~8 H200s at 2 rollouts/s for 300s windows
 MAX_PROBLEMS_PER_WINDOW = int(os.getenv("GRAIL_MAX_PROBLEMS_PER_WINDOW", "500"))
@@ -78,30 +82,33 @@ class RedisProblemQueue:
         Args:
             redis_url: Redis connection URL (redis://host:port/db)
             worker_id: This worker's ID (0 = leader within a server)
-            server_id: Unique identifier for this server (auto-generated if None)
+            server_id: Unique identifier for this server (shared via Redis if None)
         """
         import redis
 
         self.redis_url = redis_url
         self.worker_id = worker_id
         self.is_leader = worker_id == 0
-        self.server_id = server_id or self._generate_server_id()
 
-        # Connect to Redis
+        # Connect to Redis first (needed for server_id sharing)
         self.client = redis.from_url(redis_url, decode_responses=True)
 
         # Test connection
         try:
             self.client.ping()
-            logger.info(
-                "Redis problem queue connected: %s (server=%s, worker=%d)",
-                self._safe_url(redis_url),
-                self.server_id,
-                worker_id,
-            )
         except redis.ConnectionError as e:
             logger.error("Failed to connect to Redis: %s", e)
             raise
+
+        # Get or share server_id via Redis (ensures all workers use same ID)
+        self.server_id = self._get_or_share_server_id(server_id)
+
+        logger.info(
+            "Redis problem queue connected: %s (server=%s, worker=%d)",
+            self._safe_url(redis_url),
+            self.server_id,
+            worker_id,
+        )
 
     def _generate_server_id(self) -> str:
         """Generate a unique server identifier."""
@@ -111,6 +118,85 @@ class RedisProblemQueue:
         hostname = socket.gethostname()
         short_uuid = str(uuid.uuid4())[:8]
         return f"{hostname}-{short_uuid}"
+
+    def _get_or_share_server_id(self, provided_id: str | None) -> str:
+        """
+        Get shared server_id from Redis or set it if worker 0.
+
+        This ensures all workers on the same node use the same server_id,
+        giving consistent claim keys like node-1:worker0, node-1:worker1.
+
+        Args:
+            provided_id: Server ID from environment variable (if any)
+
+        Returns:
+            The server_id to use (shared across all workers)
+        """
+        # If explicitly provided via env var, use it
+        if provided_id:
+            if self.is_leader:
+                # Leader stores the provided server_id in Redis for other workers
+                try:
+                    self.client.setex(REDIS_NODE_ID_KEY, REDIS_NODE_ID_TTL, provided_id)
+                    logger.info(
+                        "Worker 0: stored server_id '%s' in Redis for other workers",
+                        provided_id,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to store server_id in Redis: %s", e)
+            return provided_id
+
+        # No provided server_id - use Redis for coordination
+        if self.is_leader:
+            # Leader generates and stores a server_id
+            generated_id = self._generate_server_id()
+            try:
+                # Use SETNX to avoid overwriting if another leader already set it
+                set_result = self.client.setnx(REDIS_NODE_ID_KEY, generated_id)
+                if set_result:
+                    self.client.expire(REDIS_NODE_ID_KEY, REDIS_NODE_ID_TTL)
+                    logger.info(
+                        "Worker 0: generated and stored server_id '%s' in Redis",
+                        generated_id,
+                    )
+                    return generated_id
+                else:
+                    # Another process already set it, read and use that one
+                    existing_id = self.client.get(REDIS_NODE_ID_KEY)
+                    if existing_id:
+                        logger.info(
+                            "Worker 0: using existing server_id '%s' from Redis",
+                            existing_id,
+                        )
+                        return existing_id
+                    return generated_id
+            except Exception as e:
+                logger.warning("Failed to coordinate server_id via Redis: %s", e)
+                return generated_id
+        else:
+            # Follower tries to read from Redis
+            try:
+                # Wait a bit for leader to set it (up to 5 seconds)
+                for _ in range(50):  # 50 * 0.1s = 5 seconds
+                    shared_id = self.client.get(REDIS_NODE_ID_KEY)
+                    if shared_id:
+                        logger.info(
+                            "Worker %d: using shared server_id '%s' from Redis",
+                            self.worker_id,
+                            shared_id,
+                        )
+                        return shared_id
+                    time.sleep(0.1)
+
+                # Timeout - generate our own (fallback)
+                logger.warning(
+                    "Worker %d: no shared server_id in Redis after 5s, generating own",
+                    self.worker_id,
+                )
+                return self._generate_server_id()
+            except Exception as e:
+                logger.warning("Failed to read server_id from Redis: %s", e)
+                return self._generate_server_id()
 
     def _safe_url(self, url: str) -> str:
         """Mask password in URL for logging."""
@@ -328,7 +414,8 @@ def get_problem_queue(
             # Import redis to check if available
             import redis  # noqa: F401
 
-            server_id = os.getenv("GRAIL_SERVER_ID")
+            # Check GRAIL_NODE_ID first, then GRAIL_SERVER_ID for backwards compatibility
+            server_id = os.getenv("GRAIL_NODE_ID") or os.getenv("GRAIL_SERVER_ID")
             return RedisProblemQueue(redis_url, worker_id, server_id)
 
         except ImportError:
