@@ -1323,6 +1323,276 @@ Failed to connect to Redis, falling back to file-based
 
 ---
 
+## Multi-Node Deployment (4+ Servers)
+
+For maximum throughput with 4 nodes × 8 A100s = 32 GPUs on the same wallet, you need **Redis-based rollout aggregation**. This ensures all 32 GPUs contribute to a single parquet upload per window.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Multi-Node Architecture (32 GPUs)                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Node 1 (HUB)              Node 2                Node 3              Node 4 │
+│  ┌─────────────┐          ┌───────────┐         ┌───────────┐      ┌───────┐│
+│  │ 8x A100     │          │ 8x A100   │         │ 8x A100   │      │8xA100 ││
+│  │ Worker 0-7  │          │ Worker0-7 │         │ Worker0-7 │      │W0-7   ││
+│  │             │          │           │         │           │      │       ││
+│  │ GRAIL_HUB_  │          │           │         │           │      │       ││
+│  │ MODE=1      │          │           │         │           │      │       ││
+│  └──────┬──────┘          └─────┬─────┘         └─────┬─────┘      └───┬───┘│
+│         │                       │                     │                │    │
+│         │    Local aggregate    │                     │                │    │
+│         ▼                       ▼                     ▼                ▼    │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                        Redis (on Hub)                                 │  │
+│  │                     grail:rollouts:{window}:*                        │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│         │                                                                   │
+│         │ Hub aggregates from all nodes                                     │
+│         ▼                                                                   │
+│  ┌──────────────┐                                                          │
+│  │  Single R2   │   grail/windows/{wallet}-window-{block}.parquet          │
+│  │  Upload      │                                                          │
+│  └──────────────┘                                                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Step-by-Step Deployment
+
+#### Step 1: Choose Hub Node
+
+Pick one node to be the "hub" - this node will:
+- Run Redis locally
+- Aggregate rollouts from all nodes
+- Upload the single parquet file
+
+Typically, choose the node with the best network connection to R2.
+
+#### Step 2: Install Redis on Hub
+
+```bash
+# On the HUB node only
+# Option A: Docker (recommended)
+docker run -d --name grail-redis \
+  -p 6379:6379 \
+  --restart unless-stopped \
+  redis:7-alpine redis-server --appendonly yes
+
+# Option B: System package (Ubuntu/Debian)
+apt-get update && apt-get install -y redis-server
+systemctl enable redis-server
+systemctl start redis-server
+
+# Verify Redis is running
+redis-cli ping   # Should return "PONG"
+```
+
+**Security Note:** By default, Redis binds to localhost. To allow connections from other nodes:
+
+```bash
+# Edit Redis config (Docker)
+docker exec -it grail-redis redis-cli CONFIG SET bind "0.0.0.0"
+docker exec -it grail-redis redis-cli CONFIG SET protected-mode "no"
+
+# Or for system Redis, edit /etc/redis/redis.conf:
+# bind 0.0.0.0
+# protected-mode no
+```
+
+For production, use Redis AUTH password or a private network.
+
+#### Step 3: Install Redis Python Package on All Nodes
+
+```bash
+# On ALL nodes
+cd /root/Grail
+source .venv/bin/activate
+uv pip install redis
+```
+
+#### Step 4: Configure Hub Node
+
+On the hub node, use the hub ecosystem config:
+
+```bash
+# Copy the hub config
+cp ecosystem-a100-multinode-hub.config.js ecosystem.config.js
+
+# Edit the config to set your Redis URL (localhost since Redis runs here)
+# Default is already: GRAIL_REDIS_URL: 'redis://localhost:6379/0'
+```
+
+Or add these environment variables to your existing config for Worker 0:
+
+```javascript
+env: {
+  // ... existing settings ...
+  GRAIL_REDIS_URL: 'redis://localhost:6379/0',
+  GRAIL_HUB_MODE: '1',           // This node aggregates and uploads
+  GRAIL_NODE_ID: 'node-1',       // Unique identifier
+  GRAIL_TOTAL_NODES: '4',        // Total number of nodes
+},
+```
+
+#### Step 5: Configure Worker Nodes
+
+On each worker node (nodes 2, 3, 4), use the worker ecosystem config:
+
+```bash
+# Copy the worker config
+cp ecosystem-a100-multinode-worker.config.js ecosystem.config.js
+
+# Edit the config to set:
+# 1. GRAIL_REDIS_URL pointing to hub's IP
+# 2. Unique GRAIL_NODE_ID for each node
+```
+
+Edit the config:
+
+```javascript
+env: {
+  // ... existing settings ...
+  GRAIL_REDIS_URL: 'redis://10.0.0.1:6379/0',  // Hub's IP address
+  GRAIL_NODE_ID: 'node-2',                      // Unique: node-2, node-3, node-4
+  GRAIL_TOTAL_NODES: '4',
+  // Note: NO GRAIL_HUB_MODE (only hub has this)
+},
+```
+
+#### Step 6: Start Mining
+
+Start nodes in order (hub first, then workers):
+
+```bash
+# On HUB node (Node 1)
+cd /root/Grail
+pm2 start ecosystem.config.js
+pm2 save
+
+# On Worker nodes (Nodes 2, 3, 4) - can start simultaneously
+cd /root/Grail
+pm2 start ecosystem.config.js
+pm2 save
+```
+
+#### Step 7: Verify Multi-Node Operation
+
+On the hub node, check for multi-node aggregation:
+
+```bash
+pm2 logs grail-miner-0 | grep -E "(Hub|Redis|nodes)"
+```
+
+Expected log output:
+
+```
+🌐 Multi-node HUB mode: will aggregate from 4 nodes and upload
+Redis rollout aggregator connected: node=node-1, hub=True, total_nodes=4
+🌐 Pushing 350 rollouts to Redis...
+🌐 Hub waiting for 4 nodes...
+Hub: 4/4 nodes ready for window 7200000 (waited 5.2s)
+🌐 Hub aggregated 2800 rollouts from all nodes
+📤 Uploading 2800 aggregated rollouts to R2 for window 7200000...
+```
+
+On worker nodes:
+
+```bash
+pm2 logs grail-miner-0 | grep -E "(Redis|pushed)"
+```
+
+Expected:
+
+```
+🌐 Multi-node WORKER mode: will push rollouts to Redis (node=node-2)
+🌐 Pushing 300 rollouts to Redis...
+🌐 Node pushed rollouts to Redis, hub will upload
+```
+
+### Multi-Node Environment Variables
+
+| Variable | Required | Description | Example |
+|----------|----------|-------------|---------|
+| `GRAIL_REDIS_URL` | Yes | Redis connection URL | `redis://10.0.0.1:6379/0` |
+| `GRAIL_HUB_MODE` | Hub only | Set to `1` on the hub node | `1` |
+| `GRAIL_NODE_ID` | Optional | Unique node identifier | `node-1`, `node-2` |
+| `GRAIL_TOTAL_NODES` | Optional | Number of nodes (default: 4) | `4` |
+
+### How Duplicate Prevention Works
+
+With 32 GPUs across 4 nodes, coordination is critical:
+
+1. **Problem Assignment (Redis INCR)**
+   - All 32 workers share a Redis counter
+   - `INCR grail:problems:{window}:counter` is atomic
+   - Each worker gets unique problem indices
+
+2. **Local Aggregation (per node)**
+   - Each node's leader aggregates its 8 workers
+   - Deduplicates by `(rollout_group, rollout_index)`
+   - Pushes to Redis: `grail:rollouts:{window}:node:{node_id}`
+
+3. **Hub Aggregation**
+   - Hub waits for all nodes to push
+   - Collects from Redis, merges all rollouts
+   - Deduplicates again (safety net)
+   - Sorts by `rollout_group` for validator
+   - Truncates at first gap
+   - Uploads single parquet file
+
+### Troubleshooting Multi-Node
+
+**Hub not receiving rollouts from all nodes:**
+
+```bash
+# Check Redis connectivity from worker nodes
+redis-cli -h HUB_IP ping
+
+# Check what's in Redis
+redis-cli -h HUB_IP KEYS "grail:rollouts:*"
+```
+
+**Workers can't connect to Redis:**
+
+```bash
+# Check firewall
+# On hub, allow port 6379
+ufw allow 6379/tcp
+
+# Check Redis is bound to all interfaces
+docker exec grail-redis redis-cli CONFIG GET bind
+```
+
+**Timeout waiting for nodes:**
+
+```bash
+# On hub, check how many nodes pushed
+redis-cli SCARD "grail:rollouts:{window}:nodes"
+
+# Increase timeout in ecosystem config if needed (default 60s)
+```
+
+**Wrong rollout count:**
+
+If hub aggregates fewer rollouts than expected:
+- Check all nodes have same `GRAIL_TOTAL_NODES` value
+- Verify all nodes are mining the same window (check block height)
+- Check for gaps in problem indices (logged as warnings)
+
+### Expected Throughput (Multi-Node)
+
+| Configuration | GPUs | Rollouts/Window | Score Multiplier |
+|---------------|------|-----------------|------------------|
+| 1 node × 8 A100 | 8 | ~2,400-3,200 | 1x |
+| 2 nodes × 8 A100 | 16 | ~4,800-6,400 | 16x |
+| 4 nodes × 8 A100 | 32 | ~9,600-12,800 | 256x |
+
+Score uses `rollouts^4.0`, so doubling rollouts = 16x score.
+
+---
+
 ## Quick Start Summary
 
 ```bash

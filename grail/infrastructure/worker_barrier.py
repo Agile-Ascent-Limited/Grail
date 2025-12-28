@@ -874,6 +874,343 @@ class RolloutStaging:
 
 
 # --------------------------------------------------------------------------- #
+#                   Redis-Based Multi-Node Rollout Aggregation                #
+# --------------------------------------------------------------------------- #
+
+REDIS_ROLLOUT_PREFIX = "grail:rollouts"
+REDIS_ROLLOUT_TTL = 600  # 10 minutes - enough for window + upload
+
+
+class RedisRolloutAggregator:
+    """
+    Redis-based aggregation for multi-node deployments.
+
+    Architecture for 4 nodes × 8 GPUs = 32 GPUs on same wallet:
+        Node 1: Workers 0-7 → Local Staging → Leader pushes to Redis
+        Node 2: Workers 0-7 → Local Staging → Leader pushes to Redis
+        Node 3: Workers 0-7 → Local Staging → Leader pushes to Redis
+        Node 4: Workers 0-7 → Local Staging → Leader pushes to Redis
+                                   ↓
+        Hub (Node 1): Aggregates from Redis → Single parquet upload
+
+    Environment variables:
+        GRAIL_REDIS_URL - Redis connection URL (required for multi-node)
+        GRAIL_HUB_MODE=1 - Enables hub aggregation (only one node)
+        GRAIL_NODE_ID - Unique node identifier (auto-generated if not set)
+        GRAIL_TOTAL_NODES - Total number of nodes (default: 4)
+
+    Usage:
+        # On worker nodes (all nodes):
+        aggregator = RedisRolloutAggregator(redis_url, node_id, is_hub=False)
+        aggregator.push_rollouts(window, rollouts)
+
+        # On hub node (one node only, typically node with GRAIL_HUB_MODE=1):
+        aggregator = RedisRolloutAggregator(redis_url, node_id, is_hub=True)
+        all_rollouts = await aggregator.aggregate_from_nodes(window, total_nodes=4)
+        await upload_window(wallet, window, all_rollouts)
+    """
+
+    def __init__(
+        self,
+        redis_url: str,
+        node_id: str | None = None,
+        is_hub: bool = False,
+        total_nodes: int = 4,
+    ):
+        """
+        Initialize Redis rollout aggregator.
+
+        Args:
+            redis_url: Redis connection URL
+            node_id: Unique identifier for this node
+            is_hub: If True, this node collects and uploads
+            total_nodes: Expected number of nodes
+        """
+        import redis
+
+        self.redis_url = redis_url
+        self.node_id = node_id or self._generate_node_id()
+        self.is_hub = is_hub
+        self.total_nodes = total_nodes
+
+        # Connect to Redis
+        self.client = redis.from_url(redis_url, decode_responses=True)
+
+        # Test connection
+        try:
+            self.client.ping()
+            logger.info(
+                "Redis rollout aggregator connected: node=%s, hub=%s, total_nodes=%d",
+                self.node_id,
+                is_hub,
+                total_nodes,
+            )
+        except redis.ConnectionError as e:
+            logger.error("Failed to connect to Redis for rollout aggregation: %s", e)
+            raise
+
+    def _generate_node_id(self) -> str:
+        """Generate a unique node identifier."""
+        import socket
+        import uuid
+
+        hostname = socket.gethostname()
+        short_uuid = str(uuid.uuid4())[:8]
+        return f"{hostname}-{short_uuid}"
+
+    def _rollouts_key(self, window: int, node_id: str) -> str:
+        """Get Redis key for a node's rollouts."""
+        return f"{REDIS_ROLLOUT_PREFIX}:{window}:node:{node_id}"
+
+    def _ready_key(self, window: int, node_id: str) -> str:
+        """Get Redis key for node ready marker."""
+        return f"{REDIS_ROLLOUT_PREFIX}:{window}:ready:{node_id}"
+
+    def _nodes_list_key(self, window: int) -> str:
+        """Get Redis key for list of nodes that pushed."""
+        return f"{REDIS_ROLLOUT_PREFIX}:{window}:nodes"
+
+    def push_rollouts(self, window: int, rollouts: list[dict]) -> bool:
+        """
+        Push this node's aggregated rollouts to Redis.
+
+        Called by each node's leader after local aggregation.
+
+        Args:
+            window: Window number
+            rollouts: Aggregated rollouts from this node
+
+        Returns:
+            True if successfully pushed
+        """
+        try:
+            # Serialize rollouts
+            data = json.dumps({
+                "node_id": self.node_id,
+                "window": window,
+                "rollout_count": len(rollouts),
+                "rollouts": rollouts,
+                "timestamp": time.time(),
+            })
+
+            # Store with TTL
+            rollouts_key = self._rollouts_key(window, self.node_id)
+            self.client.setex(rollouts_key, REDIS_ROLLOUT_TTL, data)
+
+            # Register this node
+            nodes_key = self._nodes_list_key(window)
+            self.client.sadd(nodes_key, self.node_id)
+            self.client.expire(nodes_key, REDIS_ROLLOUT_TTL)
+
+            # Set ready marker
+            ready_key = self._ready_key(window, self.node_id)
+            self.client.setex(ready_key, REDIS_ROLLOUT_TTL, str(time.time()))
+
+            logger.info(
+                "Node %s pushed %d rollouts to Redis for window %d",
+                self.node_id, len(rollouts), window,
+            )
+            return True
+
+        except Exception as e:
+            logger.error("Failed to push rollouts to Redis: %s", e)
+            return False
+
+    async def wait_for_nodes(
+        self, window: int, timeout: float = 60.0, min_nodes: int | None = None
+    ) -> int:
+        """
+        Hub waits for nodes to push their rollouts.
+
+        Args:
+            window: Window number
+            timeout: Max time to wait
+            min_nodes: Minimum nodes required (default: total_nodes)
+
+        Returns:
+            Number of nodes that pushed rollouts
+        """
+        if not self.is_hub:
+            return 0
+
+        if min_nodes is None:
+            min_nodes = self.total_nodes
+
+        start_time = time.time()
+        poll_interval = 1.0
+
+        while True:
+            elapsed = time.time() - start_time
+
+            # Count ready nodes
+            nodes_key = self._nodes_list_key(window)
+            ready_nodes = self.client.scard(nodes_key)
+
+            if ready_nodes >= min_nodes:
+                logger.info(
+                    "Hub: %d/%d nodes ready for window %d (waited %.1fs)",
+                    ready_nodes, self.total_nodes, window, elapsed,
+                )
+                return ready_nodes
+
+            if elapsed > timeout:
+                logger.warning(
+                    "Hub: timeout waiting for nodes, only %d/%d ready for window %d",
+                    ready_nodes, self.total_nodes, window,
+                )
+                return ready_nodes
+
+            await asyncio.sleep(poll_interval)
+
+    def aggregate_from_nodes(self, window: int) -> list[dict]:
+        """
+        Hub aggregates rollouts from all nodes.
+
+        Returns:
+            Combined list of rollouts from all nodes, sorted by problem_index
+        """
+        if not self.is_hub:
+            logger.error("aggregate_from_nodes called on non-hub node")
+            return []
+
+        try:
+            # Get list of nodes that pushed
+            nodes_key = self._nodes_list_key(window)
+            node_ids = self.client.smembers(nodes_key)
+
+            if not node_ids:
+                logger.warning("No nodes have pushed rollouts for window %d", window)
+                return []
+
+            all_rollouts = []
+            for node_id in node_ids:
+                rollouts_key = self._rollouts_key(window, node_id)
+                data = self.client.get(rollouts_key)
+
+                if data:
+                    try:
+                        parsed = json.loads(data)
+                        node_rollouts = parsed.get("rollouts", [])
+                        all_rollouts.extend(node_rollouts)
+                        logger.debug(
+                            "Hub aggregated %d rollouts from node %s",
+                            len(node_rollouts), node_id,
+                        )
+                    except json.JSONDecodeError as e:
+                        logger.warning("Failed to parse rollouts from node %s: %s", node_id, e)
+
+            # Deduplicate by (rollout_group, rollout_index)
+            if all_rollouts:
+                seen_keys: set[tuple[int, int]] = set()
+                unique_rollouts = []
+                duplicate_count = 0
+
+                for r in all_rollouts:
+                    key = (r.get("rollout_group", 0), r.get("rollout_index", 0))
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        unique_rollouts.append(r)
+                    else:
+                        duplicate_count += 1
+
+                if duplicate_count > 0:
+                    logger.warning(
+                        "Hub: removed %d duplicate rollouts from multi-node aggregation",
+                        duplicate_count,
+                    )
+                all_rollouts = unique_rollouts
+
+            # Sort by problem_index for validator
+            all_rollouts.sort(key=lambda r: r.get("rollout_group", 0))
+
+            # Truncate at first gap
+            if all_rollouts:
+                problem_indices = sorted(set(r.get("rollout_group", 0) for r in all_rollouts))
+                first_gap = None
+                for expected_idx in range(problem_indices[-1] + 1):
+                    if expected_idx not in problem_indices:
+                        first_gap = expected_idx
+                        break
+
+                if first_gap is not None:
+                    original_count = len(all_rollouts)
+                    all_rollouts = [r for r in all_rollouts if r.get("rollout_group", 0) < first_gap]
+                    logger.warning(
+                        "Hub: gap at problem %d, truncated to %d contiguous rollouts",
+                        first_gap, len(all_rollouts),
+                    )
+
+            logger.info(
+                "Hub aggregated %d total rollouts from %d nodes for window %d",
+                len(all_rollouts), len(node_ids), window,
+            )
+            return all_rollouts
+
+        except Exception as e:
+            logger.error("Hub failed to aggregate rollouts: %s", e)
+            return []
+
+    def cleanup_window(self, window: int) -> None:
+        """Clean up Redis keys for a completed window."""
+        try:
+            # Get all nodes
+            nodes_key = self._nodes_list_key(window)
+            node_ids = self.client.smembers(nodes_key)
+
+            # Delete all keys for this window
+            keys_to_delete = [nodes_key]
+            for node_id in node_ids:
+                keys_to_delete.append(self._rollouts_key(window, node_id))
+                keys_to_delete.append(self._ready_key(window, node_id))
+
+            if keys_to_delete:
+                self.client.delete(*keys_to_delete)
+                logger.debug("Hub cleaned up %d Redis keys for window %d", len(keys_to_delete), window)
+
+        except Exception as e:
+            logger.warning("Failed to cleanup Redis keys for window %d: %s", window, e)
+
+
+def get_redis_rollout_aggregator() -> RedisRolloutAggregator | None:
+    """
+    Get Redis rollout aggregator if multi-node mode is enabled.
+
+    Environment variables:
+        GRAIL_REDIS_URL - Required for multi-node
+        GRAIL_HUB_MODE=1 - This node is the hub (aggregator/uploader)
+        GRAIL_NODE_ID - Optional unique node ID
+        GRAIL_TOTAL_NODES - Number of nodes (default: 4)
+
+    Returns:
+        RedisRolloutAggregator if enabled, None otherwise
+    """
+    redis_url = os.getenv("GRAIL_REDIS_URL", "").strip()
+    if not redis_url:
+        return None
+
+    try:
+        import redis  # noqa: F401
+
+        node_id = os.getenv("GRAIL_NODE_ID")
+        is_hub = os.getenv("GRAIL_HUB_MODE", "").lower() in ("1", "true", "yes")
+        total_nodes = int(os.getenv("GRAIL_TOTAL_NODES", "4"))
+
+        return RedisRolloutAggregator(
+            redis_url=redis_url,
+            node_id=node_id,
+            is_hub=is_hub,
+            total_nodes=total_nodes,
+        )
+
+    except ImportError:
+        logger.warning("GRAIL_REDIS_URL set but redis package not installed")
+        return None
+    except Exception as e:
+        logger.warning("Failed to create Redis rollout aggregator: %s", e)
+        return None
+
+
+# --------------------------------------------------------------------------- #
 #                   Problem Queue for Gap-Free Distribution                   #
 # --------------------------------------------------------------------------- #
 
