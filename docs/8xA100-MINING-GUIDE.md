@@ -1450,12 +1450,19 @@ cp ecosystem-a100-multinode-hub.config.js ecosystem.config.js
 Or add these environment variables to your existing config for Worker 0:
 
 ```javascript
+// Worker 0 only needs these settings:
 env: {
   // ... existing settings ...
   GRAIL_REDIS_URL: 'redis://localhost:6379/0',
   GRAIL_HUB_MODE: '1',           // This node aggregates and uploads
-  GRAIL_NODE_ID: 'node-1',       // Unique identifier
+  GRAIL_NODE_ID: 'node-1',       // Unique identifier (auto-shared to workers 1-7 via Redis)
   GRAIL_TOTAL_NODES: '4',        // Total number of nodes
+},
+
+// Workers 1-7 only need GRAIL_REDIS_URL (they read node_id from Redis automatically):
+env: {
+  // ... existing settings ...
+  GRAIL_REDIS_URL: 'redis://localhost:6379/0',
 },
 ```
 
@@ -1475,12 +1482,19 @@ cp ecosystem-a100-multinode-worker.config.js ecosystem.config.js
 Edit the config:
 
 ```javascript
+// Worker 0 only needs GRAIL_NODE_ID (it's auto-shared to workers 1-7 via Redis):
 env: {
   // ... existing settings ...
   GRAIL_REDIS_URL: 'redis://10.0.0.1:6379/0',  // Hub's IP address
-  GRAIL_NODE_ID: 'node-2',                      // Unique: node-2, node-3, node-4
+  GRAIL_NODE_ID: 'node-2',                      // Unique: node-2, node-3, node-4 (only on Worker 0)
   GRAIL_TOTAL_NODES: '4',
   // Note: NO GRAIL_HUB_MODE (only hub has this)
+},
+
+// Workers 1-7 only need GRAIL_REDIS_URL:
+env: {
+  // ... existing settings ...
+  GRAIL_REDIS_URL: 'redis://10.0.0.1:6379/0',  // Hub's IP address
 },
 ```
 
@@ -1540,8 +1554,12 @@ Expected:
 |----------|----------|-------------|---------|
 | `GRAIL_REDIS_URL` | Yes | Redis connection URL | `redis://10.0.0.1:6379/0` |
 | `GRAIL_HUB_MODE` | Hub only | Set to `1` on the hub node | `1` |
-| `GRAIL_NODE_ID` | Optional | Unique node identifier | `node-1`, `node-2` |
+| `GRAIL_NODE_ID` | Worker 0 only | Unique node identifier (auto-shared via Redis) | `node-1`, `node-2` |
 | `GRAIL_TOTAL_NODES` | Optional | Number of nodes (default: 4) | `4` |
+
+**Note on `GRAIL_NODE_ID`:** You only need to set this on **Worker 0** of each node. Worker 0 stores the node_id in Redis at key `grail:config:node_id`, and Workers 1-7 automatically read it from Redis. This ensures all workers on the same node use a consistent identifier for problem claiming and rollout tracking.
+
+If `GRAIL_NODE_ID` is not set, Worker 0 generates a unique ID automatically (hostname + UUID) and shares it via Redis.
 
 ### How Duplicate Prevention Works
 
@@ -1603,6 +1621,68 @@ If hub aggregates fewer rollouts than expected:
 - Check all nodes have same `GRAIL_TOTAL_NODES` value
 - Verify all nodes are mining the same window (check block height)
 - Check for gaps in problem indices (logged as warnings)
+
+### Adding a Second Node to an Existing Hub
+
+If you already have a hub running (node-1) and want to add a second server as node-2:
+
+**On the new server (node-2):**
+
+```bash
+# 1. Clone and setup (same as single-node setup)
+git clone https://github.com/Agile-Ascent-Limited/Grail.git && cd grail
+uv venv --python 3.10 && source .venv/bin/activate
+uv sync
+uv pip install redis orjson
+bash scripts/setup_vllm_env.sh  # Or install flash-attn
+
+# 2. Setup wallet (regenerate from mnemonic - same wallet as hub)
+btcli w regen_coldkey --wallet-name YOUR_WALLET --wallet_path "~/.bittensor/wallets/" --mnemonic "your 12 words" --overwrite
+btcli w regen_hotkey --wallet-name YOUR_WALLET --wallet.hotkey YOUR_HOTKEY --wallet_path "~/.bittensor/wallets/" --mnemonic "your 12 words" --overwrite
+
+# 3. Copy your .env from the hub (same R2 credentials, wallet settings)
+# Or create new .env with same settings
+
+# 4. Use the worker ecosystem config
+cp ecosystem-a100-multinode-worker.config.js ecosystem.config.js
+
+# 5. Edit ecosystem.config.js - change these values:
+#    For Worker 0:
+#      GRAIL_REDIS_URL: 'redis://HUB_IP:6379/0'  # Hub's actual IP
+#      GRAIL_NODE_ID: 'node-2'                    # Unique for this node
+#    For Workers 1-7:
+#      GRAIL_REDIS_URL: 'redis://HUB_IP:6379/0'  # Hub's actual IP
+
+# 6. Create directories and start
+mkdir -p /var/log/grail /var/cache/grail
+pm2 start ecosystem.config.js
+pm2 save
+```
+
+**Verify connectivity:**
+
+```bash
+# Test Redis connection to hub
+redis-cli -h HUB_IP ping  # Should return "PONG"
+
+# Check logs for successful Redis connection
+pm2 logs grail-miner-0 | grep -E "(Redis|node-2)"
+# Should see: "Redis problem queue connected: redis://HUB_IP:6379/0 (server=node-2, worker=0)"
+```
+
+**On the hub (node-1):**
+
+```bash
+# Verify hub sees rollouts from both nodes
+pm2 logs grail-miner-0 | grep -E "Hub.*nodes"
+# Should see: "Hub: 2/2 nodes ready for window..."
+```
+
+**Key points:**
+- Same wallet/hotkey on both servers (they share the same identity on the blockchain)
+- Same `.env` configuration (R2 credentials, wallet names)
+- Only Worker 0 needs `GRAIL_NODE_ID` (Workers 1-7 read it from Redis automatically)
+- Hub keeps `GRAIL_HUB_MODE=1`, worker node does NOT have this setting
 
 ### Expected Throughput (Multi-Node)
 
