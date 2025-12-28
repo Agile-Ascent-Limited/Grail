@@ -24,10 +24,11 @@ CUDA_VISIBLE_DEVICES=0 grail mine
 
 ### Terminal 2 - Run Validator (Test Mode)
 ```bash
-CUDA_VISIBLE_DEVICES=1 grail validate --test-mode
+CUDA_VISIBLE_DEVICES=1 grail -vv validate --test-mode
 ```
 
-The `--test-mode` flag makes the validator only check your own uploaded rollouts.
+- `-vv` enables verbose output (recommended by subnet owner)
+- `--test-mode` makes the validator only check your own uploaded rollouts
 
 ## Testing Precision Tuning
 
@@ -37,8 +38,8 @@ If you're running on non-A100 GPUs (H100, H200, RTX 4090, etc.), enable precisio
 # Miner with precision tuning
 CUDA_VISIBLE_DEVICES=0 GRAIL_PRECISION_TUNING=1 grail mine
 
-# Validator
-CUDA_VISIBLE_DEVICES=1 grail validate --test-mode
+# Validator (verbose)
+CUDA_VISIBLE_DEVICES=1 grail -vv validate --test-mode
 ```
 
 ### What Precision Tuning Does
