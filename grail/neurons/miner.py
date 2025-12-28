@@ -232,18 +232,24 @@ class MinerNeuron(BaseNeuron):
                     worker_config.worker_id, worker_config.total_workers,
                 )
 
-            # Multi-node Redis aggregation (optional, for 4+ nodes on same wallet)
-            redis_aggregator = get_redis_rollout_aggregator()
+            # Redis-based rollout aggregation (per-worker direct push to Redis)
+            # Each worker pushes their own rollouts; hub (worker 0) aggregates and uploads
+            redis_aggregator = get_redis_rollout_aggregator(
+                worker_id=worker_config.worker_id,
+                total_workers=worker_config.total_workers,
+            )
             if redis_aggregator is not None:
                 if redis_aggregator.is_hub:
                     logger.info(
-                        "🌐 Multi-node HUB mode: will aggregate from %d nodes and upload",
+                        "🌐 Redis HUB mode: worker %d will aggregate from %d workers × %d nodes and upload",
+                        worker_config.worker_id,
+                        redis_aggregator.total_workers,
                         redis_aggregator.total_nodes,
                     )
                 else:
                     logger.info(
-                        "🌐 Multi-node WORKER mode: will push rollouts to Redis (node=%s)",
-                        redis_aggregator.node_id,
+                        "🌐 Redis mode: worker %s will push rollouts directly to Redis",
+                        redis_aggregator.worker_key,
                     )
 
             netuid = int(get_conf("BT_NETUID", get_conf("NETUID", 200)))
@@ -586,32 +592,30 @@ class MinerNeuron(BaseNeuron):
                     prefetch_task = None
 
                     if inferences:
-                        # Multi-worker aggregation: all workers stage locally,
-                        # only leader aggregates and uploads to R2
-                        if rollout_staging is not None:
-                            # Check if window was already uploaded (late worker scenario)
-                            if rollout_staging.is_window_uploaded(window_start):
-                                logger.warning(
-                                    f"⚠️ Window {window_start} already uploaded, "
-                                    f"discarding {len(inferences)} late rollouts"
-                                )
-                            else:
-                                # Save to local staging
-                                rollout_staging.save_rollouts(window_start, inferences)
+                        # Choose aggregation mode: Redis (preferred) or file-based (fallback)
+                        if redis_aggregator is not None:
+                            # REDIS MODE: Each worker pushes directly to Redis
+                            # No file staging needed - Redis handles everything
+                            logger.info(
+                                f"🌐 Worker {redis_aggregator.worker_key} pushing {len(inferences)} rollouts to Redis..."
+                            )
+                            redis_aggregator.push_rollouts(window_start, inferences)
 
-                            if barrier.is_leader:
-                                # Leader: wait for other workers, aggregate, upload
+                            if redis_aggregator.is_hub:
+                                # Hub: wait for all workers and aggregate
+                                expected_workers = redis_aggregator.total_nodes * redis_aggregator.total_workers
                                 logger.info(
-                                    f"📦 Leader waiting for workers to stage rollouts..."
+                                    f"🌐 Hub waiting for {expected_workers} workers..."
                                 )
-                                await rollout_staging.wait_for_workers(
-                                    window_start, timeout=30.0
+                                await redis_aggregator.wait_for_workers(
+                                    window_start, timeout=60.0
                                 )
-                                all_inferences = rollout_staging.aggregate_rollouts(window_start)
+                                all_inferences = redis_aggregator.aggregate_from_workers(window_start)
+                                logger.info(
+                                    f"🌐 Hub aggregated {len(all_inferences)} rollouts from all workers"
+                                )
 
                                 # Filter out rollouts with mismatched checkpoint_window
-                                # This prevents hard failures when some workers lag behind on
-                                # checkpoint updates (validator rejects mixed checkpoint submissions)
                                 if all_inferences and current_checkpoint_window is not None:
                                     original_count = len(all_inferences)
                                     all_inferences = [
@@ -625,35 +629,8 @@ class MinerNeuron(BaseNeuron):
                                             f"with mismatched checkpoint_window (expected {current_checkpoint_window})"
                                         )
 
-                                # Multi-node Redis aggregation
-                                should_upload = True
-                                if redis_aggregator is not None and all_inferences:
-                                    # Push this node's rollouts to Redis
-                                    logger.info(
-                                        f"🌐 Pushing {len(all_inferences)} rollouts to Redis..."
-                                    )
-                                    redis_aggregator.push_rollouts(window_start, all_inferences)
-
-                                    if redis_aggregator.is_hub:
-                                        # Hub: wait for other nodes and aggregate
-                                        logger.info(
-                                            f"🌐 Hub waiting for {redis_aggregator.total_nodes} nodes..."
-                                        )
-                                        await redis_aggregator.wait_for_nodes(
-                                            window_start, timeout=60.0
-                                        )
-                                        all_inferences = redis_aggregator.aggregate_from_nodes(window_start)
-                                        logger.info(
-                                            f"🌐 Hub aggregated {len(all_inferences)} rollouts from all nodes"
-                                        )
-                                    else:
-                                        # Non-hub node: skip upload, hub handles it
-                                        logger.info(
-                                            f"🌐 Node pushed rollouts to Redis, hub will upload"
-                                        )
-                                        should_upload = False
-
-                                if should_upload and all_inferences:
+                                # Hub uploads
+                                if all_inferences:
                                     logger.info(
                                         f"📤 Uploading {len(all_inferences)} aggregated rollouts "
                                         f"to R2 for window {window_start}..."
@@ -667,7 +644,6 @@ class MinerNeuron(BaseNeuron):
                                             f"✅ Successfully uploaded window {window_start} "
                                             f"with {len(all_inferences)} aggregated rollouts"
                                         )
-                                        # Clean summary line for easy PM2 log monitoring
                                         ts = datetime.now().strftime("%H:%M:%S")
                                         logger.info(
                                             f"[SUMMARY] W0 | window={window_start} | rollouts={len(all_inferences)} | UPLOADED | {ts}"
@@ -676,11 +652,78 @@ class MinerNeuron(BaseNeuron):
                                         if monitor:
                                             await monitor.log_counter("mining/successful_uploads")
                                             await monitor.log_gauge("mining/uploaded_rollouts", len(all_inferences))
-                                        # Mark window as uploaded so late workers skip staging
-                                        rollout_staging.mark_window_uploaded(window_start)
                                         # Hub cleanup Redis keys
-                                        if redis_aggregator is not None and redis_aggregator.is_hub:
-                                            redis_aggregator.cleanup_window(window_start)
+                                        redis_aggregator.cleanup_window(window_start)
+                                    except Exception as e:
+                                        logger.error(f"❌ Failed to upload window {window_start}: {e}")
+                                        logger.error(traceback.format_exc())
+                                        if monitor:
+                                            await monitor.log_counter("mining/failed_uploads")
+                            else:
+                                # Non-hub worker: just pushed to Redis, done
+                                ts = datetime.now().strftime("%H:%M:%S")
+                                logger.info(
+                                    f"[SUMMARY] {redis_aggregator.worker_key} | window={window_start} | "
+                                    f"rollouts={len(inferences)} | PUSHED | {ts}"
+                                )
+
+                        elif rollout_staging is not None:
+                            # FILE-BASED MODE: Local staging (fallback when Redis not available)
+                            if rollout_staging.is_window_uploaded(window_start):
+                                logger.warning(
+                                    f"⚠️ Window {window_start} already uploaded, "
+                                    f"discarding {len(inferences)} late rollouts"
+                                )
+                            else:
+                                rollout_staging.save_rollouts(window_start, inferences)
+
+                            if barrier.is_leader:
+                                # Leader: wait for other workers, aggregate, upload
+                                logger.info(
+                                    f"📦 Leader waiting for workers to stage rollouts..."
+                                )
+                                await rollout_staging.wait_for_workers(
+                                    window_start, timeout=30.0
+                                )
+                                all_inferences = rollout_staging.aggregate_rollouts(window_start)
+
+                                # Filter out rollouts with mismatched checkpoint_window
+                                if all_inferences and current_checkpoint_window is not None:
+                                    original_count = len(all_inferences)
+                                    all_inferences = [
+                                        inf for inf in all_inferences
+                                        if inf.get("checkpoint_window") == current_checkpoint_window
+                                    ]
+                                    filtered_count = original_count - len(all_inferences)
+                                    if filtered_count > 0:
+                                        logger.warning(
+                                            f"⚠️ Filtered {filtered_count}/{original_count} rollouts "
+                                            f"with mismatched checkpoint_window (expected {current_checkpoint_window})"
+                                        )
+
+                                if all_inferences:
+                                    logger.info(
+                                        f"📤 Uploading {len(all_inferences)} aggregated rollouts "
+                                        f"to R2 for window {window_start}..."
+                                    )
+                                    try:
+                                        upload_duration = await upload_inferences_with_metrics(
+                                            wallet, window_start, all_inferences, credentials, monitor,
+                                        )
+                                        timers.update_upload_time_ema(upload_duration)
+                                        logger.info(
+                                            f"✅ Successfully uploaded window {window_start} "
+                                            f"with {len(all_inferences)} aggregated rollouts"
+                                        )
+                                        ts = datetime.now().strftime("%H:%M:%S")
+                                        logger.info(
+                                            f"[SUMMARY] W0 | window={window_start} | rollouts={len(all_inferences)} | UPLOADED | {ts}"
+                                        )
+                                        self.heartbeat()
+                                        if monitor:
+                                            await monitor.log_counter("mining/successful_uploads")
+                                            await monitor.log_gauge("mining/uploaded_rollouts", len(all_inferences))
+                                        rollout_staging.mark_window_uploaded(window_start)
                                     except Exception as e:
                                         logger.error(f"❌ Failed to upload window {window_start}: {e}")
                                         logger.error(traceback.format_exc())
