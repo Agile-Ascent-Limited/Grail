@@ -879,6 +879,8 @@ class RolloutStaging:
 
 REDIS_ROLLOUT_PREFIX = "grail:rollouts"
 REDIS_ROLLOUT_TTL = 600  # 10 minutes - enough for window + upload
+REDIS_NODE_ID_KEY = "grail:config:node_id"  # Shared node ID for all workers
+REDIS_NODE_ID_TTL = 86400  # 24 hours - persist across restarts
 
 
 class RedisRolloutAggregator:
@@ -930,7 +932,7 @@ class RedisRolloutAggregator:
 
         Args:
             redis_url: Redis connection URL
-            node_id: Unique identifier for this node
+            node_id: Unique identifier for this node (if None, shared via Redis)
             is_hub: If True, this worker collects and uploads
             total_nodes: Expected number of nodes (1 for single-node)
             worker_id: This worker's ID (0-7)
@@ -939,32 +941,36 @@ class RedisRolloutAggregator:
         import redis
 
         self.redis_url = redis_url
-        self.node_id = node_id or self._generate_node_id()
         self.is_hub = is_hub
         self.total_nodes = total_nodes
         self.worker_id = worker_id
         self.total_workers = total_workers
 
-        # Unique key for this worker (node:worker)
-        self.worker_key = f"{self.node_id}:w{worker_id}"
-
-        # Connect to Redis
+        # Connect to Redis first (needed for node_id sharing)
         self.client = redis.from_url(redis_url, decode_responses=True)
 
         # Test connection
         try:
             self.client.ping()
-            logger.info(
-                "Redis rollout aggregator connected: node=%s, worker=%d, hub=%s, nodes=%d, workers=%d",
-                self.node_id,
-                worker_id,
-                is_hub,
-                total_nodes,
-                total_workers,
-            )
         except redis.ConnectionError as e:
             logger.error("Failed to connect to Redis for rollout aggregation: %s", e)
             raise
+
+        # Get or share node_id via Redis
+        # Worker 0 sets the shared node_id, other workers read it
+        self.node_id = self._get_or_share_node_id(node_id)
+
+        # Unique key for this worker (node:worker)
+        self.worker_key = f"{self.node_id}:w{worker_id}"
+
+        logger.info(
+            "Redis rollout aggregator connected: node=%s, worker=%d, hub=%s, nodes=%d, workers=%d",
+            self.node_id,
+            worker_id,
+            is_hub,
+            total_nodes,
+            total_workers,
+        )
 
     def _generate_node_id(self) -> str:
         """Generate a unique node identifier."""
@@ -974,6 +980,97 @@ class RedisRolloutAggregator:
         hostname = socket.gethostname()
         short_uuid = str(uuid.uuid4())[:8]
         return f"{hostname}-{short_uuid}"
+
+    def _get_or_share_node_id(self, provided_node_id: str | None) -> str:
+        """
+        Get shared node_id from Redis or set it if worker 0.
+
+        This ensures all workers on the same node use the same node_id,
+        giving cleaner worker keys like node-1:w0, node-1:w1 instead of
+        each worker generating its own random UUID.
+
+        Logic:
+        - If provided_node_id is set (from GRAIL_NODE_ID env var):
+          - Worker 0: Store it in Redis for other workers
+          - Other workers: Use the provided value
+        - If no provided_node_id:
+          - Worker 0: Generate one and store in Redis
+          - Other workers: Try to read from Redis, fall back to generate
+
+        Args:
+            provided_node_id: Node ID from environment variable (if any)
+
+        Returns:
+            The node_id to use (shared across all workers)
+        """
+        is_leader = self.worker_id == 0
+
+        # If explicitly provided via env var, use it
+        if provided_node_id:
+            if is_leader:
+                # Leader stores the provided node_id in Redis for other workers
+                try:
+                    self.client.setex(REDIS_NODE_ID_KEY, REDIS_NODE_ID_TTL, provided_node_id)
+                    logger.info(
+                        "Worker 0: stored node_id '%s' in Redis for other workers",
+                        provided_node_id,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to store node_id in Redis: %s", e)
+            return provided_node_id
+
+        # No provided node_id - use Redis for coordination
+        if is_leader:
+            # Leader generates and stores a node_id
+            generated_id = self._generate_node_id()
+            try:
+                # Use SETNX to avoid overwriting if another leader already set it
+                # (e.g., if leader restarted but followers are still running)
+                set_result = self.client.setnx(REDIS_NODE_ID_KEY, generated_id)
+                if set_result:
+                    self.client.expire(REDIS_NODE_ID_KEY, REDIS_NODE_ID_TTL)
+                    logger.info(
+                        "Worker 0: generated and stored node_id '%s' in Redis",
+                        generated_id,
+                    )
+                    return generated_id
+                else:
+                    # Another process already set it, read and use that one
+                    existing_id = self.client.get(REDIS_NODE_ID_KEY)
+                    if existing_id:
+                        logger.info(
+                            "Worker 0: using existing node_id '%s' from Redis",
+                            existing_id,
+                        )
+                        return existing_id
+                    return generated_id
+            except Exception as e:
+                logger.warning("Failed to coordinate node_id via Redis: %s", e)
+                return generated_id
+        else:
+            # Follower tries to read from Redis
+            try:
+                # Wait a bit for leader to set it (up to 5 seconds)
+                for _ in range(50):  # 50 * 0.1s = 5 seconds
+                    shared_id = self.client.get(REDIS_NODE_ID_KEY)
+                    if shared_id:
+                        logger.info(
+                            "Worker %d: using shared node_id '%s' from Redis",
+                            self.worker_id,
+                            shared_id,
+                        )
+                        return shared_id
+                    time.sleep(0.1)
+
+                # Timeout - generate our own (fallback)
+                logger.warning(
+                    "Worker %d: no shared node_id in Redis after 5s, generating own",
+                    self.worker_id,
+                )
+                return self._generate_node_id()
+            except Exception as e:
+                logger.warning("Failed to read node_id from Redis: %s", e)
+                return self._generate_node_id()
 
     def _rollouts_key(self, window: int, worker_key: str) -> str:
         """Get Redis key for a worker's rollouts."""
