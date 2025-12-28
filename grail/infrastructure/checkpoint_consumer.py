@@ -144,6 +144,9 @@ class CheckpointManager:
     grail.trainer.checkpoint_publisher module.
     """
 
+    # How long verification result is cached (seconds)
+    VERIFICATION_CACHE_TTL = 300  # 5 minutes
+
     def __init__(
         self,
         *,
@@ -159,6 +162,9 @@ class CheckpointManager:
         self._metadata_cache: dict[tuple[int, str], CheckpointMetadata] = {}
         self._download_locks: dict[int, asyncio.Lock] = {}
         self._fallback_attempted: set[int] = set()
+        # Verification cache: {window: (timestamp, manifest_hash)} for recently verified checkpoints
+        # This avoids re-hashing 14GB+ files when checkpoint was just prefetched
+        self._verification_cache: dict[int, tuple[float, str]] = {}
 
         # Clean up stale locks from crashed workers on startup
         if MULTI_WORKER_ENABLED:
@@ -968,7 +974,45 @@ class CheckpointManager:
 
         await asyncio.gather(*(_dl(k) for k in keys))
 
-    async def _verify_integrity(self, checkpoint_dir: Path, manifest: dict[str, str]) -> bool:
+    async def _verify_integrity(
+        self, checkpoint_dir: Path, manifest: dict[str, str], use_cache: bool = True
+    ) -> bool:
+        """Verify checkpoint file integrity using SHA256 hashes.
+
+        Args:
+            checkpoint_dir: Path to checkpoint directory
+            manifest: Dict of {filename: expected_sha256_hash}
+            use_cache: If True, skip verification if recently verified (default: True)
+
+        Returns:
+            True if all files match their expected hashes
+        """
+        import time
+
+        # Extract window number from directory name for cache key
+        try:
+            window = int(checkpoint_dir.name.split("-")[-1])
+        except (ValueError, IndexError):
+            window = None
+
+        # Check verification cache to avoid re-hashing recently verified checkpoints
+        # This saves ~20 seconds when checkpoint was just prefetched
+        if use_cache and window is not None:
+            manifest_hash = hashlib.sha256(
+                json.dumps(manifest, sort_keys=True).encode()
+            ).hexdigest()[:16]
+
+            if window in self._verification_cache:
+                cached_time, cached_manifest_hash = self._verification_cache[window]
+                age = time.time() - cached_time
+                if age < self.VERIFICATION_CACHE_TTL and cached_manifest_hash == manifest_hash:
+                    logger.debug(
+                        "Skipping verification for checkpoint %s (cached %.0fs ago)",
+                        window, age,
+                    )
+                    return True
+
+        # Full verification: hash each file
         for filename, expected_hash in manifest.items():
             file_path = checkpoint_dir / filename
             if not file_path.exists():
@@ -984,6 +1028,16 @@ class CheckpointManager:
                     digest,
                 )
                 return False
+
+        # Cache successful verification
+        if window is not None:
+            import time
+            manifest_hash = hashlib.sha256(
+                json.dumps(manifest, sort_keys=True).encode()
+            ).hexdigest()[:16]
+            self._verification_cache[window] = (time.time(), manifest_hash)
+            logger.debug("Cached verification result for checkpoint %s", window)
+
         return True
 
     async def _handle_delta_checkpoint(
