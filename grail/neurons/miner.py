@@ -912,13 +912,23 @@ class MinerNeuron(BaseNeuron):
 
                     last_window_start = window_start
 
-                    # Wait for prefetch task to complete before next window
-                    # This ensures the checkpoint is fully downloaded/reconstructed
+                    # Fire-and-forget prefetch - don't block next window
+                    # If prefetch is still running, next window's get_checkpoint() will:
+                    # 1. Find cached checkpoint if prefetch completed → fast load
+                    # 2. Wait on download lock if prefetch in progress → no duplicate work
+                    # 3. Download from scratch if prefetch failed → same as before
                     if prefetch_task is not None:
-                        try:
-                            await prefetch_task
-                        except Exception as e:
-                            logger.debug(f"Prefetch task error (non-critical): {e}")
+                        if not prefetch_task.done():
+                            logger.info(
+                                "⏩ Prefetch still running - continuing to next window "
+                                "(checkpoint will be ready or downloaded at window start)"
+                            )
+                        else:
+                            # Prefetch completed, check for errors
+                            try:
+                                prefetch_task.result()
+                            except Exception as e:
+                                logger.debug(f"Prefetch completed with error (non-critical): {e}")
                         prefetch_task = None
 
                     # Only leader should cleanup checkpoints, and only after a new

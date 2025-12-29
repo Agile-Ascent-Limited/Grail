@@ -1313,7 +1313,7 @@ class RedisRolloutAggregator:
             # Sort by problem_index for validator
             all_rollouts.sort(key=lambda r: r.get("rollout_group", 0))
 
-            # Truncate at first gap
+            # Truncate at first gap - validator requires contiguous problem indices
             if all_rollouts:
                 problem_indices = sorted(set(r.get("rollout_group", 0) for r in all_rollouts))
                 first_gap = None
@@ -1326,8 +1326,8 @@ class RedisRolloutAggregator:
                     original_count = len(all_rollouts)
                     all_rollouts = [r for r in all_rollouts if r.get("rollout_group", 0) < first_gap]
                     logger.warning(
-                        "Hub: gap at problem %d, truncated to %d contiguous rollouts",
-                        first_gap, len(all_rollouts),
+                        "Hub: gap at problem %d, truncated from %d to %d contiguous rollouts (lost %d)",
+                        first_gap, original_count, len(all_rollouts), original_count - len(all_rollouts),
                     )
 
             logger.info(

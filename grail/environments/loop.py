@@ -295,6 +295,67 @@ class VLLMServerBackend:
         self._client = None
         self._client_lock = None  # Will be created per-event-loop
 
+        # Health tracking for early abort on persistent failures
+        self._consecutive_failures = 0
+        self._last_health_check: float = 0.0
+        self._is_healthy = True
+        # Threshold: if all requests in a batch fail, mark as unhealthy
+        self._unhealthy_threshold = 3  # 3 consecutive batches with 100% failures
+
+    async def check_health(self, timeout: float = 5.0) -> bool:
+        """Check if vLLM server is responding.
+
+        Args:
+            timeout: Max time to wait for health check
+
+        Returns:
+            True if server is healthy, False otherwise
+        """
+        import aiohttp
+        import time
+
+        # Don't spam health checks - cache result for 5 seconds
+        if time.time() - self._last_health_check < 5.0:
+            return self._is_healthy
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self._base_url}/v1/models",
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as resp:
+                    self._is_healthy = resp.status == 200
+                    self._last_health_check = time.time()
+                    if self._is_healthy:
+                        self._consecutive_failures = 0
+                    return self._is_healthy
+        except Exception as e:
+            logger.warning("vLLM health check failed: %s", e)
+            self._is_healthy = False
+            self._last_health_check = time.time()
+            return False
+
+    def mark_batch_failed(self) -> None:
+        """Mark that an entire batch failed (all requests returned empty)."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._unhealthy_threshold:
+            if self._is_healthy:
+                logger.error(
+                    "vLLM server marked UNHEALTHY after %d consecutive failed batches",
+                    self._consecutive_failures,
+                )
+            self._is_healthy = False
+
+    def mark_batch_success(self) -> None:
+        """Mark that a batch had at least some successful requests."""
+        self._consecutive_failures = 0
+        self._is_healthy = True
+
+    @property
+    def is_healthy(self) -> bool:
+        """Check if server is considered healthy based on recent requests."""
+        return self._is_healthy
+
     def _get_client(self):
         """Get or create AsyncOpenAI client for current event loop.
 
@@ -500,10 +561,36 @@ class VLLMServerBackend:
         completions: dict[int, str] = {}
         chosen_lp_map: dict[int, list[float] | None] = {}
         chosen_token_ids_map: dict[int, list[int] | None] = {}
+        failed_count = 0
         for idx, text, chosen_lp, chosen_tok_ids in results_tuples:
             completions[idx] = text
             chosen_lp_map[idx] = chosen_lp
             chosen_token_ids_map[idx] = chosen_tok_ids
+            # Track failures (empty text = failed request)
+            if not text:
+                failed_count += 1
+
+        # Track batch health
+        if failed_count == batch_size:
+            # All requests failed - server is likely down
+            self.mark_batch_failed()
+            logger.error(
+                "vLLMServer: ALL %d requests failed - server may be down (consecutive_failures=%d)",
+                batch_size,
+                self._consecutive_failures,
+            )
+        elif failed_count > 0:
+            # Some failures but not all - server is stressed but alive
+            logger.warning(
+                "vLLMServer: %d/%d requests failed (%.0f%% success rate)",
+                failed_count,
+                batch_size,
+                100 * (batch_size - failed_count) / batch_size,
+            )
+            self.mark_batch_success()  # At least some worked
+        else:
+            # All succeeded
+            self.mark_batch_success()
 
         results: list[tuple[list[int], list[float] | None]] = []
         for idx, p_ids in enumerate(prompt_ids_batch):

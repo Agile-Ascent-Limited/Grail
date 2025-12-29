@@ -842,6 +842,18 @@ async def generate_rollouts_for_window(
                     CHALLENGE_K,
                     short_details,
                 )
+                # Check if vLLM server is completely down (all rollouts failed)
+                # If so, abort generation early to save time
+                if len(short_rollouts) == len(grpo_rollouts):
+                    # Check if loop's backend is unhealthy (after consecutive failures)
+                    backend = getattr(loop, "_backend", None)
+                    if backend is not None and hasattr(backend, "is_healthy"):
+                        if not backend.is_healthy:
+                            logger.error(
+                                "🚨 vLLM server appears DOWN - aborting generation early "
+                                "(consecutive failed batches detected)"
+                            )
+                            break  # Exit generation loop, push what we have
                 # Skip packaging this group entirely; continue to next problem
                 timers.update_gen_time_ema(time.time() - gen_start)
                 continue
