@@ -35,8 +35,9 @@ REDIS_NODE_ID_KEY = "grail:config:node_id"
 REDIS_NODE_ID_TTL = 86400  # 24 hours
 
 # Maximum problems per window (configurable via env var)
-# Default 500 supports ~8 H200s at 2 rollouts/s for 300s windows
-MAX_PROBLEMS_PER_WINDOW = int(os.getenv("GRAIL_MAX_PROBLEMS_PER_WINDOW", "500"))
+# Default 2000 supports up to 4 nodes × 8 GPUs at ~500 rollouts/worker
+# (each problem = 8 rollouts with completion_n=8)
+MAX_PROBLEMS_PER_WINDOW = int(os.getenv("GRAIL_MAX_PROBLEMS_PER_WINDOW", "2000"))
 
 
 class ProblemQueueProtocol(Protocol):
