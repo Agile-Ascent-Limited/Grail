@@ -1480,6 +1480,22 @@ ufw allow 6379/tcp
 
 **Note:** These settings disable authentication for simplicity on private networks. For public-facing Redis, add a password with `requirepass yourpassword` in the config.
 
+**Debugging Redis:**
+
+Use `redis-cli MONITOR` to see all commands being sent to Redis in real-time:
+
+```bash
+# Default port (6379)
+redis-cli MONITOR
+
+# Custom port (e.g., 45296)
+redis-cli -p 45296 MONITOR
+```
+
+This is useful for debugging multi-node coordination - you'll see `INCR` commands for problem claiming, `SET` commands for rollout staging, etc. Press `Ctrl+C` to stop monitoring.
+
+**Note:** MONITOR has performance overhead (~50% throughput reduction), so only use for debugging, not in production.
+
 #### Step 3: Install Redis Python Package on All Nodes
 
 ```bash
