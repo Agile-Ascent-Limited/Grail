@@ -909,8 +909,22 @@ class RolloutStaging:
 
 REDIS_ROLLOUT_PREFIX = "grail:rollouts"
 REDIS_ROLLOUT_TTL = 600  # 10 minutes - enough for window + upload
-REDIS_NODE_ID_KEY = "grail:config:node_id"  # Shared node ID for all workers
+# Node ID key PREFIX - actual key is per-hostname to prevent cross-node collision
+REDIS_NODE_ID_KEY_PREFIX = "grail:config:node_id"
 REDIS_NODE_ID_TTL = 86400  # 24 hours - persist across restarts
+
+
+def _get_node_id_key() -> str:
+    """Get hostname-specific Redis key for node_id sharing.
+
+    Each physical node uses a different key (grail:config:node_id:{hostname})
+    so workers on different nodes don't overwrite each other's node_id.
+    """
+    import socket
+    hostname = socket.gethostname()
+    return f"{REDIS_NODE_ID_KEY_PREFIX}:{hostname}"
+
+
 REDIS_CHECKPOINT_KEY = "grail:checkpoint:current"  # Current checkpoint info
 REDIS_CHECKPOINT_TTL = 600  # 10 minutes
 
@@ -1037,15 +1051,18 @@ class RedisRolloutAggregator:
         """
         is_leader = self.worker_id == 0
 
+        # Get hostname-specific key for node_id sharing (prevents cross-node collision)
+        node_id_key = _get_node_id_key()
+
         # If explicitly provided via env var, use it
         if provided_node_id:
             if is_leader:
-                # Leader stores the provided node_id in Redis for other workers
+                # Leader stores the provided node_id in Redis for other workers on same host
                 try:
-                    self.client.setex(REDIS_NODE_ID_KEY, REDIS_NODE_ID_TTL, provided_node_id)
+                    self.client.setex(node_id_key, REDIS_NODE_ID_TTL, provided_node_id)
                     logger.info(
-                        "Worker 0: stored node_id '%s' in Redis for other workers",
-                        provided_node_id,
+                        "Worker 0: stored node_id '%s' in Redis key '%s' for other workers",
+                        provided_node_id, node_id_key,
                     )
                 except Exception as e:
                     logger.warning("Failed to store node_id in Redis: %s", e)
@@ -1058,17 +1075,17 @@ class RedisRolloutAggregator:
             try:
                 # Use SETNX to avoid overwriting if another leader already set it
                 # (e.g., if leader restarted but followers are still running)
-                set_result = self.client.setnx(REDIS_NODE_ID_KEY, generated_id)
+                set_result = self.client.setnx(node_id_key, generated_id)
                 if set_result:
-                    self.client.expire(REDIS_NODE_ID_KEY, REDIS_NODE_ID_TTL)
+                    self.client.expire(node_id_key, REDIS_NODE_ID_TTL)
                     logger.info(
-                        "Worker 0: generated and stored node_id '%s' in Redis",
-                        generated_id,
+                        "Worker 0: generated and stored node_id '%s' in Redis key '%s'",
+                        generated_id, node_id_key,
                     )
                     return generated_id
                 else:
                     # Another process already set it, read and use that one
-                    existing_id = self.client.get(REDIS_NODE_ID_KEY)
+                    existing_id = self.client.get(node_id_key)
                     if existing_id:
                         logger.info(
                             "Worker 0: using existing node_id '%s' from Redis",
@@ -1084,7 +1101,7 @@ class RedisRolloutAggregator:
             try:
                 # Wait a bit for leader to set it (up to 5 seconds)
                 for _ in range(50):  # 50 * 0.1s = 5 seconds
-                    shared_id = self.client.get(REDIS_NODE_ID_KEY)
+                    shared_id = self.client.get(node_id_key)
                     if shared_id:
                         logger.info(
                             "Worker %d: using shared node_id '%s' from Redis",

@@ -30,9 +30,17 @@ REDIS_PREFIX = "grail:problems"
 # Should be longer than a window (~6 minutes) but not too long
 CLAIM_TTL = 600  # 10 minutes
 
-# Shared node ID key (same as worker_barrier.py for consistency)
-REDIS_NODE_ID_KEY = "grail:config:node_id"
+# Shared node ID key PREFIX - actual key is per-hostname to prevent cross-node collision
+# Each physical node uses: grail:config:node_id:{hostname}
+REDIS_NODE_ID_KEY_PREFIX = "grail:config:node_id"
 REDIS_NODE_ID_TTL = 86400  # 24 hours
+
+
+def _get_node_id_key() -> str:
+    """Get hostname-specific Redis key for node_id sharing."""
+    import socket
+    hostname = socket.gethostname()
+    return f"{REDIS_NODE_ID_KEY_PREFIX}:{hostname}"
 
 # Maximum problems per window (configurable via env var)
 # Default 2000 supports up to 4 nodes × 8 GPUs at ~500 rollouts/worker
@@ -133,15 +141,18 @@ class RedisProblemQueue:
         Returns:
             The server_id to use (shared across all workers)
         """
+        # Get hostname-specific key for node_id sharing (prevents cross-node collision)
+        node_id_key = _get_node_id_key()
+
         # If explicitly provided via env var, use it
         if provided_id:
             if self.is_leader:
-                # Leader stores the provided server_id in Redis for other workers
+                # Leader stores the provided server_id in Redis for other workers on same host
                 try:
-                    self.client.setex(REDIS_NODE_ID_KEY, REDIS_NODE_ID_TTL, provided_id)
+                    self.client.setex(node_id_key, REDIS_NODE_ID_TTL, provided_id)
                     logger.info(
-                        "Worker 0: stored server_id '%s' in Redis for other workers",
-                        provided_id,
+                        "Worker 0: stored server_id '%s' in Redis key '%s' for other workers",
+                        provided_id, node_id_key,
                     )
                 except Exception as e:
                     logger.warning("Failed to store server_id in Redis: %s", e)
@@ -153,17 +164,17 @@ class RedisProblemQueue:
             generated_id = self._generate_server_id()
             try:
                 # Use SETNX to avoid overwriting if another leader already set it
-                set_result = self.client.setnx(REDIS_NODE_ID_KEY, generated_id)
+                set_result = self.client.setnx(node_id_key, generated_id)
                 if set_result:
-                    self.client.expire(REDIS_NODE_ID_KEY, REDIS_NODE_ID_TTL)
+                    self.client.expire(node_id_key, REDIS_NODE_ID_TTL)
                     logger.info(
-                        "Worker 0: generated and stored server_id '%s' in Redis",
-                        generated_id,
+                        "Worker 0: generated and stored server_id '%s' in Redis key '%s'",
+                        generated_id, node_id_key,
                     )
                     return generated_id
                 else:
                     # Another process already set it, read and use that one
-                    existing_id = self.client.get(REDIS_NODE_ID_KEY)
+                    existing_id = self.client.get(node_id_key)
                     if existing_id:
                         logger.info(
                             "Worker 0: using existing server_id '%s' from Redis",
@@ -179,7 +190,7 @@ class RedisProblemQueue:
             try:
                 # Wait a bit for leader to set it (up to 5 seconds)
                 for _ in range(50):  # 50 * 0.1s = 5 seconds
-                    shared_id = self.client.get(REDIS_NODE_ID_KEY)
+                    shared_id = self.client.get(node_id_key)
                     if shared_id:
                         logger.info(
                             "Worker %d: using shared server_id '%s' from Redis",
