@@ -47,7 +47,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
         // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
         GRAIL_PRECISION_TUNING: '1',
       },
@@ -73,7 +73,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
         // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
         GRAIL_PRECISION_TUNING: '1',
       },
@@ -99,7 +99,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
         // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
         GRAIL_PRECISION_TUNING: '1',
       },
@@ -125,7 +125,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
         // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
         GRAIL_PRECISION_TUNING: '1',
       },
@@ -151,7 +151,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
         // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
         GRAIL_PRECISION_TUNING: '1',
       },
@@ -177,7 +177,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
         // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
         GRAIL_PRECISION_TUNING: '1',
       },
@@ -203,7 +203,7 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.70',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '5',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
         // Level 1 precision tuning (Level 2 breaks vLLM/HF compatibility)
         GRAIL_PRECISION_TUNING: '1',
       },
