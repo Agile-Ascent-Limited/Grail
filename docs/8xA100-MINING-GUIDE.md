@@ -1437,6 +1437,37 @@ docker exec -it grail-redis redis-cli CONFIG SET bind "0.0.0.0"
 docker exec -it grail-redis redis-cli CONFIG SET protected-mode "no"
 ```
 
+**Option C: Inside Docker Container (No systemd)**
+
+If you're running mining inside a Docker container where systemd isn't available:
+
+```bash
+# Install Redis
+apt-get update && apt-get install -y redis-server
+
+# Configure Redis for external access
+sed -i 's/^bind 127.0.0.1.*/bind 0.0.0.0/' /etc/redis/redis.conf
+sed -i 's/^protected-mode yes/protected-mode no/' /etc/redis/redis.conf
+
+# Disable persistence (not needed for transient data)
+sed -i 's/^appendonly yes/appendonly no/' /etc/redis/redis.conf
+sed -i 's/^save /#save /' /etc/redis/redis.conf
+
+# Optional: Change port (useful if 6379 is blocked)
+# sed -i 's/^port 6379/port 45296/' /etc/redis/redis.conf
+
+# IMPORTANT: Start Redis with config file (not just --daemonize yes)
+redis-server /etc/redis/redis.conf --daemonize yes
+
+# Verify Redis is running
+redis-cli ping  # Should return "PONG"
+
+# If using custom port:
+# redis-cli -p 45296 ping
+```
+
+**Why this differs from systemd:** The `redis-server --daemonize yes` command alone ignores your config file and uses defaults. You must explicitly pass the config path.
+
 **Firewall Configuration:**
 
 ```bash
