@@ -991,6 +991,27 @@ The **first window takes longer** due to:
 
 Subsequent windows are faster as checkpoints are cached and vLLM is warmed up.
 
+### Checkpoint Prefetch (Automatic)
+
+After the first window, the miner automatically prefetches checkpoints for maximum throughput:
+
+```
+Window N ends → Upload starts → Prefetch next checkpoint (background)
+                     ↓
+              Wait for next window block (natural pause)
+                     ↓
+              Prefetch completes during wait (zero added latency)
+                     ↓
+Window N+1 starts → Checkpoint already cached → Instant load
+```
+
+The prefetch runs during the natural wait time between windows (waiting for the blockchain to reach the next window block). This "free" download time means:
+- **~287-295 seconds** of actual generation time per ~300 second window
+- **No blocking** at window boundaries
+- **Cache hits** are silent (logged at DEBUG level)
+
+You'll see `⏩ Prefetch still running - continuing to next window` in logs, confirming the fire-and-forget prefetch is active.
+
 ---
 
 ## Seed Derivation and Validation
@@ -1223,15 +1244,17 @@ With 8x A100 80GB running the 4B model:
 
 | Metric | HuggingFace Backend | vLLM Backend |
 |--------|---------------------|--------------|
-| Rollouts per worker per window | ~150-250 | ~300-400 |
-| Total rollouts per window (8 workers) | ~1200-2000 | ~2400-3200 |
+| Rollouts per worker per window | ~150-250 | ~450-550 |
+| Total rollouts per window (8 workers) | ~1200-2000 | ~3600-3900 |
 | GPU utilization | 70-90% | 80-95% |
 | VRAM usage per GPU | ~20-30GB | ~15-25GB |
 | Network upload per window | ~50-200MB | ~100-300MB |
 
 **Real-world results with optimized vLLM setup:**
-- 2448 rollouts achieved with 8x A100, `GRAIL_MINER_SAFETY_BLOCKS=1`, batch size 16
-- This represents ~306 rollouts per worker per window
+- **3600-3900 rollouts** per window with 8x A100 80GB
+- ~287-295 seconds of generation time per ~300s window (95%+ utilization)
+- Checkpoint prefetch runs during inter-window wait (zero added latency)
+- Settings: `GRAIL_MINER_SAFETY_BLOCKS=5`, batch size 16, 7 workers
 
 ### Scoring Impact
 
@@ -1688,9 +1711,9 @@ pm2 logs grail-miner-0 | grep -E "Hub.*nodes"
 
 | Configuration | GPUs | Rollouts/Window | Score Multiplier |
 |---------------|------|-----------------|------------------|
-| 1 node × 8 A100 | 8 | ~2,400-3,200 | 1x |
-| 2 nodes × 8 A100 | 16 | ~4,800-6,400 | 16x |
-| 4 nodes × 8 A100 | 32 | ~9,600-12,800 | 256x |
+| 1 node × 8 A100 | 8 | ~3,600-3,900 | 1x |
+| 2 nodes × 8 A100 | 16 | ~7,200-7,800 | 16x |
+| 4 nodes × 8 A100 | 32 | ~14,400-15,600 | 256x |
 
 Score uses `rollouts^4.0`, so doubling rollouts = 16x score.
 
