@@ -1582,20 +1582,29 @@ class ProblemQueue:
             # Generate rollouts for problem_index
     """
 
-    def __init__(self, cache_root: Path, worker_id: int):
+    def __init__(self, cache_root: Path, worker_id: int, node_offset: int = 0):
         """
         Initialize problem queue.
 
         Args:
             cache_root: Root directory for cache (e.g., ~/.cache/grail)
             worker_id: This worker's ID (0 = leader)
+            node_offset: Offset to add to problem indices for multi-node uniqueness
         """
         self.cache_root = Path(cache_root)
         self.worker_id = worker_id
         self.is_leader = worker_id == 0
+        self.node_offset = node_offset
 
         self.queue_dir = self.cache_root / PROBLEM_QUEUE_DIR
         self.queue_dir.mkdir(parents=True, exist_ok=True)
+
+        if node_offset > 0:
+            logger.info(
+                "ProblemQueue initialized with node_offset=%d (problem indices will start at %d)",
+                node_offset,
+                node_offset,
+            )
 
         # Leader cleans up stale counter files on startup
         if self.is_leader:
@@ -1706,13 +1715,17 @@ class ProblemQueue:
                 os.write(fd, f"{self.worker_id}:{time.time()}".encode())
                 os.close(fd)
 
+                # Apply node offset for multi-node uniqueness
+                global_problem_index = self.node_offset + problem_index
                 logger.debug(
-                    "Worker %d claimed problem %d for window %d",
+                    "Worker %d claimed problem %d (local %d + offset %d) for window %d",
                     self.worker_id,
+                    global_problem_index,
                     problem_index,
+                    self.node_offset,
                     window,
                 )
-                return problem_index
+                return global_problem_index
 
             except FileExistsError:
                 # Another worker already claimed this index, try next

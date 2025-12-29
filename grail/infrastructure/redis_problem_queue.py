@@ -383,48 +383,47 @@ class RedisProblemQueue:
 
 
 def get_problem_queue(
-    cache_root,
+    _cache_root,  # Unused, kept for API compatibility
     worker_id: int,
     total_workers: int = 8,
 ) -> ProblemQueueProtocol:
     """
-    Get the appropriate problem queue implementation.
+    Get Redis-based problem queue for cross-server coordination.
 
-    Priority order:
-    1. Redis (GRAIL_REDIS_URL) - for cross-server coordination
-    2. File-based - default single-server mode
+    GRAIL_REDIS_URL is required for mining to ensure unique problem indices
+    across all workers and nodes.
 
     Args:
-        cache_root: Cache root directory (for file-based fallback)
+        _cache_root: Unused, kept for API compatibility
         worker_id: This worker's ID
-        total_workers: Total workers
+        total_workers: Total workers (unused)
 
     Returns:
-        Problem queue instance
-    """
-    from pathlib import Path
+        RedisProblemQueue instance
 
-    # Priority 1: Redis (cross-server coordination)
+    Raises:
+        RuntimeError: If GRAIL_REDIS_URL is not set or Redis connection fails
+    """
     redis_url = os.getenv("GRAIL_REDIS_URL", "").strip()
 
-    if redis_url:
-        try:
-            # Import redis to check if available
-            import redis  # noqa: F401
+    if not redis_url:
+        raise RuntimeError(
+            "GRAIL_REDIS_URL environment variable is required for mining. "
+            "Set it to your Redis server URL (e.g., redis://localhost:6379/0)"
+        )
 
-            # Check GRAIL_NODE_ID first, then GRAIL_SERVER_ID for backwards compatibility
-            server_id = os.getenv("GRAIL_NODE_ID") or os.getenv("GRAIL_SERVER_ID")
-            return RedisProblemQueue(redis_url, worker_id, server_id)
+    try:
+        # Import redis to check if available
+        import redis  # noqa: F401
 
-        except ImportError:
-            logger.warning(
-                "GRAIL_REDIS_URL set but redis package not installed. "
-                "Install with: pip install redis"
-            )
-        except Exception as e:
-            logger.warning("Failed to connect to Redis, falling back to file-based: %s", e)
+        # Check GRAIL_NODE_ID first, then GRAIL_SERVER_ID for backwards compatibility
+        server_id = os.getenv("GRAIL_NODE_ID") or os.getenv("GRAIL_SERVER_ID")
+        return RedisProblemQueue(redis_url, worker_id, server_id)
 
-    # Priority 3: File-based (default single-server)
-    from grail.infrastructure.worker_barrier import ProblemQueue
-
-    return ProblemQueue(Path(cache_root), worker_id)
+    except ImportError:
+        raise RuntimeError(
+            "GRAIL_REDIS_URL set but redis package not installed. "
+            "Install with: pip install redis"
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to Redis at {redis_url}: {e}")

@@ -184,8 +184,8 @@ class MiningTimers:
         )
         safety_s = float(MINER_SAFETY_BLOCKS) * self.block_time_ema_s
         total_s = est_gen_s + est_upload_s + safety_s + MINER_BUFFER_SECONDS
-        # Cap at 5 blocks max to avoid stopping too early due to inflated gen_time_ema
-        return min(5, max(1, math.ceil(total_s / max(0.001, self.block_time_ema_s))))
+        # Cap at MINER_SAFETY_BLOCKS to avoid stopping too early due to inflated gen_time_ema
+        return min(MINER_SAFETY_BLOCKS, max(1, math.ceil(total_s / max(0.001, self.block_time_ema_s))))
 
     def update_gen_time_ema(self, duration_s: float) -> None:
         # Cap first generation time to avoid model warmup skewing the EMA
@@ -390,7 +390,7 @@ async def log_generation_timing(
     blocks_remaining = (window_start + WINDOW_LENGTH) - post_gen_block
     time_remaining_s = blocks_remaining * timers.block_time_ema_s
     needed_blocks_for_upload = max(
-        5, math.ceil((timers.upload_time_ema_s or 0.0) / max(0.001, timers.block_time_ema_s))
+        MINER_SAFETY_BLOCKS, math.ceil((timers.upload_time_ema_s or 0.0) / max(0.001, timers.block_time_ema_s))
     )
 
     generation_safe = blocks_remaining > needed_blocks_for_upload
