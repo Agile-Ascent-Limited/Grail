@@ -391,9 +391,8 @@ def get_problem_queue(
     Get the appropriate problem queue implementation.
 
     Priority order:
-    1. Static allocation (GRAIL_STATIC_ALLOCATION=1) - zero overhead, pre-assigned ranges
-    2. Redis (GRAIL_REDIS_URL) - for cross-server coordination
-    3. File-based - default single-server mode
+    1. Redis (GRAIL_REDIS_URL) - for cross-server coordination
+    2. File-based - default single-server mode
 
     Args:
         cache_root: Cache root directory (for file-based fallback)
@@ -405,20 +404,7 @@ def get_problem_queue(
     """
     from pathlib import Path
 
-    # Priority 1: Static allocation (DDP-style, zero overhead)
-    static_enabled = os.getenv("GRAIL_STATIC_ALLOCATION", "").lower() in ("1", "true", "yes")
-    if static_enabled:
-        from grail.infrastructure.worker_barrier import StaticProblemAllocator, PROBLEMS_PER_WORKER
-
-        logger.info(
-            "Using STATIC allocation: %d problems/worker, worker %d/%d (zero overhead)",
-            PROBLEMS_PER_WORKER,
-            worker_id,
-            total_workers,
-        )
-        return StaticProblemAllocator(worker_id, total_workers, PROBLEMS_PER_WORKER)
-
-    # Priority 2: Redis (cross-server coordination)
+    # Priority 1: Redis (cross-server coordination)
     redis_url = os.getenv("GRAIL_REDIS_URL", "").strip()
 
     if redis_url:
