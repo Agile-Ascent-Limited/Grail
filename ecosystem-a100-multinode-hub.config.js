@@ -47,7 +47,7 @@ module.exports = {
         GRAIL_REDIS_URL: 'redis://localhost:6379/0',
         GRAIL_HUB_MODE: '1',
         GRAIL_NODE_ID: 'node-1',
-        GRAIL_TOTAL_NODES: '4',
+        GRAIL_TOTAL_NODES: '2',
       },
       max_memory_restart: '80G',
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
