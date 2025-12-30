@@ -519,8 +519,9 @@ class VLLMServerManager(InferenceServerManager):
     async def reload_with_new_checkpoint(self, new_checkpoint_path: str) -> None:
         """Reload vLLM server with updated model checkpoint.
 
-        Stops the current server, updates the model path, and restarts the server
-        with the new weights. Waits for GPU memory cleanup between stop and start.
+        Uses fast reload: kills old process immediately and starts new one without
+        waiting for GPU memory to be fully released. The new process will claim
+        GPU memory as the old one releases it.
 
         Args:
             new_checkpoint_path: Path to updated model checkpoint directory
@@ -533,29 +534,28 @@ class VLLMServerManager(InferenceServerManager):
             raise FileNotFoundError(f"Checkpoint not found: {new_checkpoint_path}")
 
         logger.info(
-            "Reloading vLLM server with new checkpoint",
-            extra={"path": new_checkpoint_path},
+            "🔄 Fast reload: %s",
+            os.path.basename(new_checkpoint_path),
         )
 
         try:
-            # Stop current server and wait for GPU cleanup
-            await self._stop_server()
+            # Fast kill: don't wait for GPU memory release
+            await self._fast_kill_server()
 
             # Update config to point to new checkpoint
             self._config.model_path = new_checkpoint_path
 
-            # Restart server with new weights
+            # Start new server immediately - it will claim GPU as old one releases
             await self._start_server()
 
             if self._process is None or self._bound_port is None:
                 raise RuntimeError("Failed to restart vLLM server after reload")
 
             logger.info(
-                "✓ vLLM server reloaded successfully",
+                "✅ vLLM reloaded in fast mode",
                 extra={
                     "checkpoint": new_checkpoint_path,
                     "url": self.base_url,
-                    "model": self.model_name,
                 },
             )
         except Exception as exc:
@@ -564,6 +564,43 @@ class VLLMServerManager(InferenceServerManager):
                 extra={"checkpoint": new_checkpoint_path, "error": str(exc)},
             )
             raise RuntimeError(f"Server reload failed: {exc}") from exc
+
+    async def _fast_kill_server(self) -> None:
+        """Kill vLLM server quickly without waiting for GPU memory release.
+
+        Used during checkpoint reload where we're starting a new server on the
+        same GPU immediately. The new process will claim memory as old releases it.
+        """
+        # Stop log streaming first
+        await self._stop_process_logger()
+
+        if self._process is None:
+            return
+
+        pid = self._process.pid
+        logger.debug("Fast kill: terminating pid=%s", pid)
+
+        try:
+            # Get process group and send SIGKILL immediately (no graceful shutdown)
+            import signal
+            try:
+                pgid = os.getpgid(pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # Already dead
+
+            # Brief wait for process to die (but don't wait for GPU memory)
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass  # Process stuck, continue anyway
+
+        except Exception as exc:
+            logger.warning("Error in fast kill: %s", exc)
+
+        self._process = None
+        self._bound_port = None
+        logger.debug("Fast kill complete")
 
     def _resolve_executable(self) -> str | None:
         """Resolve Python executable to absolute path and validate existence."""

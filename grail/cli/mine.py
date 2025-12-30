@@ -669,6 +669,9 @@ async def generate_rollouts_for_window(
             # Hub queries blockchain and caches to Redis
             current_block = await subtensor.get_current_block()
             redis_aggregator.cache_current_block(current_block)
+            # Log periodically to show hub is updating (every 5 blocks in gen loop)
+            if current_block % 5 == 0:
+                logger.info("🌐 Hub gen-loop: block %d → Redis", current_block)
         elif redis_aggregator is not None:
             # All workers read from Redis only (never RPC) - ensures perfect sync
             current_block = redis_aggregator.get_cached_block()
@@ -682,6 +685,11 @@ async def generate_rollouts_for_window(
                     )
                 await asyncio.sleep(1)
                 current_block = redis_aggregator.get_cached_block()
+            # Log successful Redis reads to confirm sync is working
+            if wait_count > 0:
+                logger.info("✅ Gen-loop got block %d from Redis after %ds", current_block, wait_count)
+            elif current_block % 5 == 0:
+                logger.info("📡 Gen-loop Redis block: %d", current_block)
         elif is_leader:
             # No Redis - local leader fetches and shares via file
             current_block = await subtensor.get_current_block()

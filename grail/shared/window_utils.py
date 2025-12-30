@@ -102,22 +102,38 @@ def log_window_wait_initial(
 def log_window_wait_periodic(
     next_window: int,
     elapsed_seconds: int,
+    current_block: int | None = None,
+    secs_per_block: float = 12.0,
 ) -> None:
     """Log periodic status update while waiting for window.
 
-    Uses INFO level with emoji. Logs elapsed time since start of wait.
+    Uses INFO level with emoji. Logs elapsed time and remaining time.
     Called every 120 seconds during wait.
 
     Args:
         next_window: Next window being waited for
         elapsed_seconds: Seconds elapsed since starting to wait
+        current_block: Current blockchain block (optional, for remaining time)
+        secs_per_block: Estimated seconds per block (default 12s)
     """
     elapsed = timedelta(seconds=elapsed_seconds)
-    logger.info(
-        "⏳ Still waiting for window %d | Elapsed: %s",
-        next_window,
-        format_duration(elapsed),
-    )
+    if current_block is not None:
+        blocks_remaining = calculate_blocks_to_window(current_block, next_window)
+        duration, eta = estimate_time_to_window(blocks_remaining, secs_per_block)
+        logger.info(
+            "⏳ Still waiting for window %d | Block: %d | Remaining: ~%s (ETA %s) | Elapsed: %s",
+            next_window,
+            current_block,
+            format_duration(duration),
+            eta.strftime("%H:%M:%S"),
+            format_duration(elapsed),
+        )
+    else:
+        logger.info(
+            "⏳ Still waiting for window %d | Elapsed: %s",
+            next_window,
+            format_duration(elapsed),
+        )
 
 
 class WindowWaitTracker:

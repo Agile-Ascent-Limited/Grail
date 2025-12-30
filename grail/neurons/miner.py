@@ -372,7 +372,9 @@ class MinerNeuron(BaseNeuron):
                         # Hub (node-1 worker-0) queries blockchain and caches to Redis
                         current_block = await subtensor.get_current_block()
                         redis_aggregator.cache_current_block(current_block)
-                        logger.debug("Hub: cached block %d to Redis", current_block)
+                        # Log periodically to avoid spam (every 10 blocks)
+                        if current_block % 10 == 0:
+                            logger.info("🌐 Hub: block %d → Redis", current_block)
                     elif redis_aggregator is not None:
                         # All other workers: read from Redis only (never RPC)
                         # Wait for hub to populate cache - ensures perfect sync
@@ -391,6 +393,10 @@ class MinerNeuron(BaseNeuron):
                             current_block = redis_aggregator.get_cached_block()
                         if wait_count > 0:
                             logger.info("✅ Got block %d from Redis after %ds", current_block, wait_count)
+                        else:
+                            # Log periodically to show block is updating (every 10 blocks)
+                            if current_block % 10 == 0:
+                                logger.info("📡 Redis block: %d", current_block)
                     else:
                         # No Redis configured - use RPC directly (single-node mode)
                         current_block = await subtensor.get_current_block()
@@ -413,6 +419,7 @@ class MinerNeuron(BaseNeuron):
                             log_window_wait_periodic(
                                 next_window=next_window,
                                 elapsed_seconds=window_wait_tracker.get_elapsed_seconds(),
+                                current_block=current_block,
                             )
 
                         await asyncio.sleep(2)
