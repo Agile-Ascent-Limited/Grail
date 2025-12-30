@@ -1681,6 +1681,70 @@ class RedisRolloutAggregator:
         except Exception:
             return None
 
+    # -------------------------------------------------------------------------
+    # Generation stop signal (hub tells all workers to stop)
+    # -------------------------------------------------------------------------
+    # When hub reaches safety blocks, it signals stop. All workers check this
+    # and stop generating immediately, ensuring synchronized window completion.
+
+    GENERATION_STOP_KEY = "grail:generation:stop"
+    GENERATION_STOP_TTL = 120  # 2 minutes - covers window transition
+
+    def signal_generation_stop(self, window: int) -> None:
+        """
+        Signal all workers to stop generating for this window.
+
+        Called by hub when it reaches the safety blocks threshold. All other
+        workers should check should_stop_generation() and stop immediately.
+
+        Args:
+            window: The window to stop generating for
+        """
+        if not self.is_hub:
+            return
+        try:
+            self.client.setex(self.GENERATION_STOP_KEY, self.GENERATION_STOP_TTL, str(window))
+            logger.info("🛑 Hub signaled STOP for window %d → Redis", window)
+        except Exception as e:
+            logger.warning("Failed to signal generation stop: %s", e)
+
+    def should_stop_generation(self, window: int) -> bool:
+        """
+        Check if hub has signaled to stop generating for this window.
+
+        Called by non-hub workers in the generation loop. When True, workers
+        should immediately stop generating and proceed to upload.
+
+        Args:
+            window: The current window being generated
+
+        Returns:
+            True if hub has signaled stop for this window, False otherwise
+        """
+        if self.is_hub:
+            return False  # Hub decides for itself, doesn't check this
+        try:
+            value = self.client.get(self.GENERATION_STOP_KEY)
+            if value is None:
+                return False
+            stop_window = int(value)
+            return stop_window == window
+        except Exception:
+            return False
+
+    def clear_generation_stop(self) -> None:
+        """
+        Clear the generation stop signal (called at start of new window).
+
+        Hub calls this at the beginning of each window to reset state.
+        """
+        if not self.is_hub:
+            return
+        try:
+            self.client.delete(self.GENERATION_STOP_KEY)
+        except Exception:
+            pass  # Non-critical
+
 
 def get_redis_rollout_aggregator(
     worker_id: int | None = None,

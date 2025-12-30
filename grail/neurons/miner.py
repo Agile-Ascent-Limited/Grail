@@ -481,22 +481,41 @@ class MinerNeuron(BaseNeuron):
                     # Local leader signals to file-based barrier for same-node sync
                     if is_hub:
                         redis_aggregator.signal_window_start(window_start)
+                        # Clear any previous stop signal from last window
+                        redis_aggregator.clear_generation_stop()
                     if barrier.is_leader:
                         barrier.signal_current_window(window_start)
 
-                    # NON-HUB LEADERS: Check Redis for hub's checkpoint to skip discovery.
-                    # Hub broadcasts checkpoint window when it starts downloading.
-                    # Non-hub leaders can use this to skip R2 discovery queries and
-                    # start their own download immediately (parallel with hub).
+                    # NON-HUB LEADERS: Wait for hub's checkpoint broadcast to skip discovery.
+                    # Hub broadcasts checkpoint window after R2 discovery (which takes 5-10s).
+                    # Non-hub leaders wait up to 15s for hub's broadcast, then fall back
+                    # to independent discovery if needed.
                     hub_checkpoint_hint: int | None = None
                     if barrier.is_leader and redis_aggregator is not None and not is_hub:
-                        redis_ckpt, _ = redis_aggregator.get_redis_checkpoint()
-                        if redis_ckpt is not None and redis_ckpt != current_checkpoint_window:
-                            logger.info(
-                                f"📡 Non-hub leader: Hub has checkpoint {redis_ckpt} "
-                                f"(current={current_checkpoint_window}), using as hint for parallel download"
-                            )
-                            hub_checkpoint_hint = redis_ckpt
+                        # Wait for hub to broadcast checkpoint (with timeout)
+                        wait_start = time.monotonic()
+                        max_hub_wait = 15.0  # Wait up to 15s for hub's checkpoint broadcast
+                        while True:
+                            redis_ckpt, _ = redis_aggregator.get_redis_checkpoint()
+                            if redis_ckpt is not None and redis_ckpt != current_checkpoint_window:
+                                elapsed = time.monotonic() - wait_start
+                                logger.info(
+                                    f"📡 Non-hub leader: Hub broadcast checkpoint {redis_ckpt} "
+                                    f"(waited {elapsed:.1f}s), using for parallel download"
+                                )
+                                hub_checkpoint_hint = redis_ckpt
+                                break
+                            elapsed = time.monotonic() - wait_start
+                            if elapsed > max_hub_wait:
+                                logger.info(
+                                    f"⏳ Non-hub leader: No hub checkpoint after {elapsed:.1f}s, "
+                                    f"falling back to independent discovery"
+                                )
+                                break
+                            # Log every 5 seconds
+                            if int(elapsed) % 5 == 0 and elapsed > 0:
+                                logger.debug(f"⏳ Non-hub leader: Waiting for hub checkpoint ({elapsed:.0f}s)...")
+                            await asyncio.sleep(0.5)
 
                     # Followers: check if leader is downloading a checkpoint BEFORE
                     # we discover/load checkpoints. This ensures all workers sync.

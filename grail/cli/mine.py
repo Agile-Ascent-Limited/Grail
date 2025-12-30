@@ -703,23 +703,41 @@ async def generate_rollouts_for_window(
         current_window = calculate_window_start(current_block)
         if current_window > window_start:
             logger.info("Window %s has ended, moving to next window", window_start)
+            # HUB: Signal all other workers to stop (window ended)
+            if is_hub and redis_aggregator is not None:
+                redis_aggregator.signal_generation_stop(window_start)
             break
 
-        blocks_remaining = (window_start + WINDOW_LENGTH) - current_block
-        needed_blocks = timers.blocks_needed_for_next_gen()
-        if blocks_remaining <= needed_blocks:
-            logger.info(
-                (
-                    "Stopping generation: %s blocks remain, need %s "
-                    "(gen≈%.1fs, upload≈%.1fs, block≈%.2fs)"
-                ),
-                blocks_remaining,
-                needed_blocks,
-                (timers.gen_time_ema_s or 0.0),
-                (timers.upload_time_ema_s or 0.0),
-                timers.block_time_ema_s,
-            )
-            break
+        # NON-HUB WORKERS: ONLY follow hub's stop signal, ignore own block timing
+        # This ensures all workers stop exactly when hub decides
+        if redis_aggregator is not None and not is_hub:
+            if redis_aggregator.should_stop_generation(window_start):
+                logger.info(
+                    "🛑 Hub signaled STOP - stopping generation for window %s",
+                    window_start,
+                )
+                break
+            # Non-hub workers skip block timing check - only hub decides when to stop
+        else:
+            # HUB and single-node mode: Use block timing to decide when to stop
+            blocks_remaining = (window_start + WINDOW_LENGTH) - current_block
+            needed_blocks = timers.blocks_needed_for_next_gen()
+            if blocks_remaining <= needed_blocks:
+                logger.info(
+                    (
+                        "Stopping generation: %s blocks remain, need %s "
+                        "(gen≈%.1fs, upload≈%.1fs, block≈%.2fs)"
+                    ),
+                    blocks_remaining,
+                    needed_blocks,
+                    (timers.gen_time_ema_s or 0.0),
+                    (timers.upload_time_ema_s or 0.0),
+                    timers.block_time_ema_s,
+                )
+                # HUB: Signal all other workers to stop
+                if is_hub and redis_aggregator is not None:
+                    redis_aggregator.signal_generation_stop(window_start)
+                break
 
         try:
             gen_start = time.time()
