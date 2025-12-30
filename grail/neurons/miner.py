@@ -30,6 +30,10 @@ _PRECISION_LEVEL = os.getenv("GRAIL_PRECISION_TUNING", "0")
 _ENABLE_PRECISION_TUNING = _PRECISION_LEVEL.lower() in ("1", "2", "true", "yes")
 _AGGRESSIVE_PRECISION = _PRECISION_LEVEL == "2"
 
+# Download-only mode: just download latest checkpoint and exit
+# Useful for pre-staging checkpoints on new nodes before joining the cluster
+_DOWNLOAD_ONLY = os.getenv("GRAIL_DOWNLOAD_ONLY", "0").lower() in ("1", "true", "yes")
+
 if _ENABLE_PRECISION_TUNING:
     # Disable TF32 - uses 19-bit precision instead of 23-bit, causes drift
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -263,119 +267,172 @@ class MinerNeuron(BaseNeuron):
                 # Determine if this is the hub (node-1 worker-0) or a non-hub leader (node-2+ worker-0)
                 is_hub = redis_aggregator is not None and redis_aggregator.is_hub
 
-                # NON-HUB LEADERS: Wait for hub to be ready BEFORE heavy blockchain init
-                # This ensures node-2+ workers don't start slow init while hub is still starting
-                # Hub caches block early, so once hub is ready, block cache is available
-                if redis_aggregator is not None and not is_hub:
-                    logger.info("⏳ Non-hub leader waiting for hub to be ready...")
-                    wait_start = time.monotonic()
-                    max_wait = 120.0  # 2 minutes max wait for hub
-                    while not redis_aggregator.is_hub_ready():
-                        elapsed = time.monotonic() - wait_start
-                        if elapsed > max_wait:
-                            logger.warning(
-                                "⚠️ Hub not ready after %.0fs - proceeding anyway",
-                                elapsed,
-                            )
-                            break
-                        if int(elapsed) % 10 == 0 and elapsed > 0:
-                            logger.info(
-                                "⏳ Still waiting for hub (%.0fs)...",
-                                elapsed,
-                            )
-                        await asyncio.sleep(1.0)
-                    else:
-                        elapsed = time.monotonic() - wait_start
-                        logger.info("✅ Hub ready after %.1fs - proceeding with init", elapsed)
-
-                # Get subtensor and metagraph for chain manager
-                subtensor = await self.get_subtensor()
-                self.heartbeat()
-
-                # HUB EARLY CACHE: If this is the hub (node-1 worker-0), cache block to Redis
-                # immediately so other nodes can start their mining loop without waiting.
-                # This reduces cross-node startup lag significantly.
-                if is_hub:
-                    try:
-                        early_block = await subtensor.get_current_block()
-                        redis_aggregator.cache_current_block(early_block)
-                        logger.info("🌐 Hub early cache: block %d → Redis (other nodes can start)", early_block)
-                    except Exception as e:
-                        logger.warning("Failed to early-cache block to Redis: %s", e)
-
-                metagraph = await subtensor.metagraph(netuid)
-                self.heartbeat()
-
-                # Initialize chain manager for credential commitments
-                config = SimpleNamespace(netuid=netuid)
-                chain_manager = GrailChainManager(config, wallet, metagraph, subtensor, credentials)
-                await chain_manager.initialize()
-                logger.info("✅ Initialized chain manager and committed read credentials")
-                # Ensure background chain worker stops on shutdown
-                self.register_shutdown_callback(chain_manager.stop)
-                self.heartbeat()
-
-                # Use trainer UID's committed read credentials for checkpoints
-                trainer_bucket = chain_manager.get_bucket(TRAINER_UID)
-                if trainer_bucket is not None:
-                    logger.info(f"✅ Using trainer UID {TRAINER_UID} bucket for checkpoints")
-                    checkpoint_credentials = trainer_bucket
-                else:
-                    logger.warning(
-                        f"⚠️ Trainer UID {TRAINER_UID} bucket not found, using local credentials"
-                    )
+                # Download-only mode: skip heavy blockchain init, use local credentials
+                if _DOWNLOAD_ONLY:
+                    logger.info("📥 Download-only mode: skipping blockchain init, using local credentials")
                     checkpoint_credentials = credentials
-                    trainer_bucket = None
+                    subtensor = await self.get_subtensor()
+                    self.heartbeat()
+                else:
+                    # NON-HUB LEADERS: Wait for hub to be ready BEFORE heavy blockchain init
+                    # This ensures node-2+ workers don't start slow init while hub is still starting
+                    # Hub caches block early, so once hub is ready, block cache is available
+                    if redis_aggregator is not None and not is_hub:
+                        logger.info("⏳ Non-hub leader waiting for hub to be ready...")
+                        wait_start = time.monotonic()
+                        max_wait = 120.0  # 2 minutes max wait for hub
+                        while not redis_aggregator.is_hub_ready():
+                            elapsed = time.monotonic() - wait_start
+                            if elapsed > max_wait:
+                                logger.warning(
+                                    "⚠️ Hub not ready after %.0fs - proceeding anyway",
+                                    elapsed,
+                                )
+                                break
+                            if int(elapsed) % 10 == 0 and elapsed > 0:
+                                logger.info(
+                                    "⏳ Still waiting for hub (%.0fs)...",
+                                    elapsed,
+                                )
+                            await asyncio.sleep(1.0)
+                        else:
+                            elapsed = time.monotonic() - wait_start
+                            logger.info("✅ Hub ready after %.1fs - proceeding with init", elapsed)
 
-                # Signal ready to followers with shared data
-                barrier.signal_ready({
-                    "trainer_bucket": trainer_bucket.model_dump() if trainer_bucket else None,
-                    "netuid": netuid,
-                })
-                # Register cleanup on shutdown
-                self.register_shutdown_callback(barrier.cleanup)
-                logger.info("✅ Leader signaled ready to followers")
+                    # Get subtensor and metagraph for chain manager
+                    subtensor = await self.get_subtensor()
+                    self.heartbeat()
 
-                # Hub signals ready to Redis for cross-node coordination
-                if is_hub:
-                    redis_aggregator.signal_hub_ready()
+                    # HUB EARLY CACHE: If this is the hub (node-1 worker-0), cache block to Redis
+                    # immediately so other nodes can start their mining loop without waiting.
+                    # This reduces cross-node startup lag significantly.
+                    if is_hub:
+                        try:
+                            early_block = await subtensor.get_current_block()
+                            redis_aggregator.cache_current_block(early_block)
+                            logger.info("🌐 Hub early cache: block %d → Redis (other nodes can start)", early_block)
+                        except Exception as e:
+                            logger.warning("Failed to early-cache block to Redis: %s", e)
+
+                    metagraph = await subtensor.metagraph(netuid)
+                    self.heartbeat()
+
+                    # Initialize chain manager for credential commitments
+                    config = SimpleNamespace(netuid=netuid)
+                    chain_manager = GrailChainManager(config, wallet, metagraph, subtensor, credentials)
+                    await chain_manager.initialize()
+                    logger.info("✅ Initialized chain manager and committed read credentials")
+                    # Ensure background chain worker stops on shutdown
+                    self.register_shutdown_callback(chain_manager.stop)
+                    self.heartbeat()
+
+                    # Use trainer UID's committed read credentials for checkpoints
+                    trainer_bucket = chain_manager.get_bucket(TRAINER_UID)
+                    if trainer_bucket is not None:
+                        logger.info(f"✅ Using trainer UID {TRAINER_UID} bucket for checkpoints")
+                        checkpoint_credentials = trainer_bucket
+                    else:
+                        logger.warning(
+                            f"⚠️ Trainer UID {TRAINER_UID} bucket not found, using local credentials"
+                        )
+                        checkpoint_credentials = credentials
+                        trainer_bucket = None
+
+                    # Signal ready to followers with shared data
+                    barrier.signal_ready({
+                        "trainer_bucket": trainer_bucket.model_dump() if trainer_bucket else None,
+                        "netuid": netuid,
+                    })
+                    # Register cleanup on shutdown
+                    self.register_shutdown_callback(barrier.cleanup)
+                    logger.info("✅ Leader signaled ready to followers")
+
+                    # Hub signals ready to Redis for cross-node coordination
+                    if is_hub:
+                        redis_aggregator.signal_hub_ready()
 
             else:
                 # FOLLOWER (workers 1-7): Wait for leader, skip blockchain init
-                logger.info(
-                    "⏳ Worker %d is FOLLOWER - waiting for leader...",
-                    worker_config.worker_id,
-                )
-
-                try:
-                    shared_data = await barrier.wait_for_leader(timeout=300)
-                    logger.info("✅ Received leader signal, proceeding with mining")
-                except TimeoutError:
-                    logger.error(
-                        "❌ Timed out waiting for leader (worker 0). "
-                        "Ensure worker 0 is running and healthy."
-                    )
-                    raise
-
-                # Reconstruct trainer_bucket from shared data
-                trainer_bucket_data = shared_data.get("trainer_bucket")
-                if trainer_bucket_data:
-                    trainer_bucket = Bucket.model_validate(trainer_bucket_data)
-                    checkpoint_credentials = trainer_bucket
-                    logger.info(f"✅ Using trainer bucket from leader for checkpoints")
-                else:
-                    logger.warning("⚠️ No trainer bucket from leader, using local credentials")
+                # In download-only mode, skip waiting and use local credentials
+                if _DOWNLOAD_ONLY:
+                    logger.info("📥 Download-only mode: skipping leader wait, using local credentials")
                     checkpoint_credentials = credentials
+                    subtensor = await self.get_subtensor()
+                    self.heartbeat()
+                else:
+                    logger.info(
+                        "⏳ Worker %d is FOLLOWER - waiting for leader...",
+                        worker_config.worker_id,
+                    )
 
-                # Followers still need subtensor for block checks in mining loop
-                subtensor = await self.get_subtensor()
-                self.heartbeat()
+                    try:
+                        shared_data = await barrier.wait_for_leader(timeout=300)
+                        logger.info("✅ Received leader signal, proceeding with mining")
+                    except TimeoutError:
+                        logger.error(
+                            "❌ Timed out waiting for leader (worker 0). "
+                            "Ensure worker 0 is running and healthy."
+                        )
+                        raise
+
+                    # Reconstruct trainer_bucket from shared data
+                    trainer_bucket_data = shared_data.get("trainer_bucket")
+                    if trainer_bucket_data:
+                        trainer_bucket = Bucket.model_validate(trainer_bucket_data)
+                        checkpoint_credentials = trainer_bucket
+                        logger.info(f"✅ Using trainer bucket from leader for checkpoints")
+                    else:
+                        logger.warning("⚠️ No trainer bucket from leader, using local credentials")
+                        checkpoint_credentials = credentials
+
+                    # Followers still need subtensor for block checks in mining loop
+                    subtensor = await self.get_subtensor()
+                    self.heartbeat()
 
             checkpoint_manager = CheckpointManager(
                 cache_root=default_checkpoint_cache_root(),
                 credentials=checkpoint_credentials,
                 keep_limit=2,  # Keep only current + previous window
             )
+
+            # Download-only mode: download latest checkpoint and exit
+            # Use: GRAIL_DOWNLOAD_ONLY=1 grail mine
+            if _DOWNLOAD_ONLY:
+                logger.info("📥 Download-only mode: fetching latest checkpoint...")
+                try:
+                    # Get current block to find latest checkpoint
+                    subtensor = await self.get_subtensor()
+                    current_block = await subtensor.get_current_block()
+                    logger.info(f"📥 Current block: {current_block}")
+
+                    # Discover latest ready checkpoint
+                    checkpoint_window = await checkpoint_manager.get_latest_ready_checkpoint(
+                        current_block
+                    )
+
+                    if checkpoint_window is None:
+                        logger.error("❌ No checkpoint available to download")
+                        return
+
+                    logger.info(f"📥 Found checkpoint: {checkpoint_window}")
+
+                    # Download it
+                    checkpoint_path = await checkpoint_manager.get_checkpoint(
+                        checkpoint_window,
+                        current_block,
+                        worker_id=worker_config.worker_id,
+                        total_workers=worker_config.total_workers,
+                    )
+
+                    if checkpoint_path:
+                        logger.info(f"✅ Checkpoint downloaded to: {checkpoint_path}")
+                        logger.info("📥 Download-only mode complete - exiting")
+                    else:
+                        logger.error("❌ Checkpoint download failed")
+                except Exception as e:
+                    logger.error(f"❌ Download-only mode failed: {e}")
+                    traceback.print_exc()
+                return  # Exit after download
 
             # Initialize monitoring for mining operations (all workers)
             monitor = get_monitoring_manager()
