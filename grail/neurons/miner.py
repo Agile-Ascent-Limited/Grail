@@ -364,7 +364,22 @@ class MinerNeuron(BaseNeuron):
                     # Use shared subtensor from base class
                     subtensor = await self.get_subtensor()
 
-                    current_block = await subtensor.get_current_block()
+                    # Get current block: leader queries RPC and caches, followers read from cache
+                    # This reduces blockchain RPC load from N workers to 1 (leader only)
+                    if barrier.is_leader:
+                        # Leader queries blockchain and caches to Redis
+                        current_block = await subtensor.get_current_block()
+                        if redis_aggregator is not None:
+                            redis_aggregator.cache_current_block(current_block)
+                    else:
+                        # Follower: try Redis cache first (saves RPC calls)
+                        current_block = None
+                        if redis_aggregator is not None:
+                            current_block = redis_aggregator.get_cached_block()
+                        if current_block is None:
+                            # Fallback to direct RPC if cache miss (leader not started yet)
+                            current_block = await subtensor.get_current_block()
+
                     window_start = self.calculate_window(current_block)
 
                     # Set monitoring context for metrics (use block_number for x-axis)

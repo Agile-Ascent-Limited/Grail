@@ -1594,6 +1594,45 @@ class RedisRolloutAggregator:
         except Exception:
             return None
 
+    # -------------------------------------------------------------------------
+    # Blockchain state caching (reduces RPC load from 16x to 1x)
+    # -------------------------------------------------------------------------
+    # Leader (worker-0) queries blockchain and caches to Redis
+    # Followers read from Redis instead of making independent RPC calls
+
+    BLOCK_CACHE_KEY = "grail:blockchain:current_block"
+    BLOCK_CACHE_TTL = 12  # 12 seconds (~2 blocks)
+
+    def cache_current_block(self, block: int) -> None:
+        """
+        Cache the current block number in Redis.
+
+        Called by leader (worker-0) after querying the blockchain.
+        Other workers read this instead of making independent RPC calls.
+
+        Args:
+            block: Current block number from blockchain RPC
+        """
+        try:
+            self.client.setex(self.BLOCK_CACHE_KEY, self.BLOCK_CACHE_TTL, str(block))
+        except Exception as e:
+            logger.debug("Failed to cache current block: %s", e)
+
+    def get_cached_block(self) -> int | None:
+        """
+        Get the cached current block from Redis.
+
+        Called by followers to avoid independent blockchain RPC calls.
+
+        Returns:
+            Cached block number or None if not available/expired
+        """
+        try:
+            value = self.client.get(self.BLOCK_CACHE_KEY)
+            return int(value) if value else None
+        except Exception:
+            return None
+
 
 def get_redis_rollout_aggregator(
     worker_id: int | None = None,
