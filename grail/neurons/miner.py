@@ -483,6 +483,8 @@ class MinerNeuron(BaseNeuron):
                         redis_aggregator.signal_window_start(window_start)
                         # Clear any previous stop signal from last window
                         redis_aggregator.clear_generation_stop()
+                        # Clear stale checkpoint so non-hub waits for fresh discovery
+                        redis_aggregator.clear_checkpoint_broadcast()
                     if barrier.is_leader:
                         barrier.signal_current_window(window_start)
 

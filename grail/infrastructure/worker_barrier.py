@@ -1535,6 +1535,21 @@ class RedisRolloutAggregator:
         except Exception:
             return None, None
 
+    def clear_checkpoint_broadcast(self) -> None:
+        """
+        Clear the checkpoint broadcast (called by hub at window start).
+
+        This prevents non-hub leaders from getting stale checkpoint info
+        from the previous window before hub has done R2 discovery.
+        """
+        if not self.is_hub:
+            return
+        try:
+            self.client.delete(REDIS_CHECKPOINT_KEY)
+            logger.debug("Cleared checkpoint broadcast from Redis")
+        except Exception:
+            pass  # Non-critical
+
     async def wait_for_checkpoint_update(
         self, current_window: int | None, timeout: float = 30.0
     ) -> tuple[int | None, str | None]:
