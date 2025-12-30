@@ -429,3 +429,95 @@ class GrailChainManager:
         if self._worker_queue:
             self._worker_queue.close()
             self._worker_queue = None
+
+
+def fetch_trainer_bucket_sync(netuid: int, trainer_uid: int = 0) -> Bucket | None:
+    """
+    Lightweight synchronous function to fetch only the trainer's bucket credentials.
+
+    This is used by download-only mode to get checkpoint credentials without
+    initializing the full GrailChainManager (which starts worker processes, etc).
+
+    Args:
+        netuid: Network UID to query
+        trainer_uid: UID of the trainer (default: 0)
+
+    Returns:
+        Bucket credentials for the trainer, or None if not found
+    """
+    from bittensor.core.chain_data import decode_account_id
+
+    try:
+        # Initialize bittensor connection
+        network = os.getenv("BT_NETWORK", "finney")
+        chain_endpoint = os.getenv("BT_CHAIN_ENDPOINT")
+
+        if chain_endpoint:
+            logger.info(f"Fetching trainer bucket from custom endpoint: {chain_endpoint}")
+            subtensor = bt.subtensor(network=chain_endpoint)
+        else:
+            logger.info(f"Fetching trainer bucket from network: {network}")
+            subtensor = bt.subtensor(network=network)
+
+        # Get metagraph to find trainer's hotkey
+        metagraph = subtensor.metagraph(netuid)
+        logger.info(f"Got metagraph with {len(metagraph.hotkeys)} hotkeys")
+
+        # Get trainer's hotkey
+        if trainer_uid >= len(metagraph.hotkeys):
+            logger.error(f"Trainer UID {trainer_uid} not found in metagraph")
+            return None
+
+        trainer_hotkey = metagraph.hotkeys[trainer_uid]
+        logger.info(f"Trainer UID {trainer_uid} hotkey: {trainer_hotkey[:16]}...")
+
+        # Query all commitments and find the trainer's
+        substrate = subtensor.substrate
+        query_result = substrate.query_map(
+            module="Commitments",
+            storage_function="CommitmentOf",
+            params=[netuid],
+            block_hash=None,
+        )
+
+        # Find trainer's commitment
+        for key, value in query_result:
+            try:
+                decoded_ss58 = decode_account_id(key[0])
+                if decoded_ss58 != trainer_hotkey:
+                    continue
+
+                # Found trainer's commitment
+                commitment = value.value["info"]["fields"][0][0]
+                bytes_tuple = commitment[next(iter(commitment.keys()))][0]
+                commitment_str = bytes(bytes_tuple).decode()
+
+                # Validate length
+                if len(commitment_str) != 128:
+                    logger.error(f"Invalid commitment length for trainer: {len(commitment_str)}")
+                    return None
+
+                # Parse commitment: 32 account_id + 32 access_key_id + 64 secret_access_key
+                account_id = commitment_str[:32]
+                access_key_id = commitment_str[32:64]
+                secret_access_key = commitment_str[64:128]
+
+                bucket = Bucket(
+                    name=account_id,
+                    account_id=account_id,
+                    access_key_id=access_key_id,
+                    secret_access_key=secret_access_key,
+                )
+                logger.info(f"Successfully fetched trainer bucket: {bucket.name.strip()}")
+                return bucket
+
+            except Exception as e:
+                logger.debug(f"Failed to decode commitment: {e}")
+                continue
+
+        logger.error(f"Trainer UID {trainer_uid} commitment not found on chain")
+        return None
+
+    except Exception as e:
+        logger.error(f"Failed to fetch trainer bucket: {e}")
+        return None

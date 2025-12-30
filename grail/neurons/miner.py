@@ -75,7 +75,7 @@ from grail.cli.mine import (
     has_time_for_next_generation,
     upload_inferences_with_metrics,
 )
-from grail.infrastructure.chain import GrailChainManager
+from grail.infrastructure.chain import GrailChainManager, fetch_trainer_bucket_sync
 from grail.trainer.config import EvalConfig
 from grail.trainer.inference_server import ServerConfig, VLLMServerManager
 from grail.infrastructure.checkpoint_consumer import (
@@ -267,10 +267,16 @@ class MinerNeuron(BaseNeuron):
                 # Determine if this is the hub (node-1 worker-0) or a non-hub leader (node-2+ worker-0)
                 is_hub = redis_aggregator is not None and redis_aggregator.is_hub
 
-                # Download-only mode: skip heavy blockchain init, use local credentials
+                # Download-only mode: fetch trainer bucket directly without full chain manager
                 if _DOWNLOAD_ONLY:
-                    logger.info("📥 Download-only mode: skipping blockchain init, using local credentials")
-                    checkpoint_credentials = credentials
+                    logger.info("📥 Download-only mode: fetching trainer bucket from chain...")
+                    trainer_bucket = fetch_trainer_bucket_sync(netuid, TRAINER_UID)
+                    if trainer_bucket:
+                        logger.info(f"📥 Got trainer bucket: {trainer_bucket.name.strip()}")
+                        checkpoint_credentials = trainer_bucket
+                    else:
+                        logger.warning("📥 Could not fetch trainer bucket, using local credentials")
+                        checkpoint_credentials = credentials
                     subtensor = await self.get_subtensor()
                     self.heartbeat()
                 else:
@@ -353,10 +359,16 @@ class MinerNeuron(BaseNeuron):
 
             else:
                 # FOLLOWER (workers 1-7): Wait for leader, skip blockchain init
-                # In download-only mode, skip waiting and use local credentials
+                # In download-only mode, fetch trainer bucket and skip leader wait
                 if _DOWNLOAD_ONLY:
-                    logger.info("📥 Download-only mode: skipping leader wait, using local credentials")
-                    checkpoint_credentials = credentials
+                    logger.info("📥 Download-only mode: fetching trainer bucket from chain...")
+                    trainer_bucket = fetch_trainer_bucket_sync(netuid, TRAINER_UID)
+                    if trainer_bucket:
+                        logger.info(f"📥 Got trainer bucket: {trainer_bucket.name.strip()}")
+                        checkpoint_credentials = trainer_bucket
+                    else:
+                        logger.warning("📥 Could not fetch trainer bucket, using local credentials")
+                        checkpoint_credentials = credentials
                     subtensor = await self.get_subtensor()
                     self.heartbeat()
                 else:
