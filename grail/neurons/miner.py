@@ -429,12 +429,7 @@ class MinerNeuron(BaseNeuron):
                     logger.info(f"📥 Found checkpoint: {checkpoint_window}")
 
                     # Download it
-                    checkpoint_path = await checkpoint_manager.get_checkpoint(
-                        checkpoint_window,
-                        current_block,
-                        worker_id=worker_config.worker_id,
-                        total_workers=worker_config.total_workers,
-                    )
+                    checkpoint_path = await checkpoint_manager.get_checkpoint(checkpoint_window)
 
                     if checkpoint_path:
                         logger.info(f"✅ Checkpoint downloaded to: {checkpoint_path}")
