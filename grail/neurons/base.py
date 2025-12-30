@@ -268,9 +268,18 @@ class BaseNeuron:
                 pass
 
         # Invoke registered cleanup callbacks (best-effort)
+        # Handle both sync and async callbacks properly
         for cb in list(self._shutdown_callbacks):
             try:
-                cb()
+                result = cb()
+                # If callback is async (returns coroutine), await it
+                if asyncio.iscoroutine(result):
+                    try:
+                        await asyncio.wait_for(result, timeout=10.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("Async shutdown callback timed out: %s", cb)
+                    except Exception as exc:
+                        logger.warning("Async shutdown callback failed: %s", exc)
             except Exception:
                 pass
 
