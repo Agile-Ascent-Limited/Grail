@@ -1285,6 +1285,55 @@ With 8x A100 80GB running the 4B model:
 
 **More workers = exponentially higher score.**
 
+### Alternative GPU Configurations
+
+While this guide focuses on A100 80GB, the miner works on other GPUs with adjusted settings.
+
+#### RTX A6000 48GB (Tested Configuration)
+
+The RTX A6000 has 48GB VRAM - sufficient for the 4B model but requires more conservative memory settings than A100:
+
+```bash
+# vLLM memory settings for A6000 48GB
+GRAIL_VLLM_GPU_MEMORY_UTIL=0.55    # ~26GB for KV cache (leaving headroom for model + activations)
+GRAIL_GENERATION_BATCH_SIZE=8      # Lower than A100 due to smaller VRAM
+GRAIL_VLLM_MAX_NUM_SEQS=32         # Concurrent sequences
+```
+
+**Memory breakdown (A6000 48GB):**
+| Setting | Memory | Purpose |
+|---------|--------|---------|
+| Model weights | ~8-10GB | 4B model in bfloat16 |
+| GPU memory util (0.55) | ~26GB | KV cache for sequences |
+| Remaining | ~10-12GB | CUDA overhead, activations, safety margin |
+
+**Why not 0.25 (25%)?**
+- 0.25 × 48GB = only ~12GB for KV cache
+- This causes "KV cache out of memory" errors during batch generation
+- vLLM needs sufficient KV cache for `max_num_seqs` concurrent sequences
+
+**Comparison:**
+
+| GPU | VRAM | Recommended `GPU_MEMORY_UTIL` | Batch Size | Max Seqs |
+|-----|------|-------------------------------|------------|----------|
+| A100 80GB | 80GB | 0.85 | 16 | 32 |
+| A6000 48GB | 48GB | 0.55 | 8 | 32 |
+| RTX 4090 24GB | 24GB | 0.70 | 4 | 16 |
+
+**Adding A6000 to existing multi-node setup:**
+
+The A6000 can join an existing A100 cluster via Redis coordination:
+
+```bash
+# On A6000 server - use download-only mode to pre-stage checkpoints
+GRAIL_DOWNLOAD_ONLY=1 grail mine
+
+# Then run normally with Redis pointing to hub
+GRAIL_REDIS_URL=redis://hub-ip:6379/0 grail mine
+```
+
+The A6000 will claim problems from the shared queue and contribute rollouts. While it generates fewer rollouts than A100 (due to smaller batches), every rollout counts toward the superlinear score formula.
+
 ---
 
 ## Multi-Server Coordination (Optional)
