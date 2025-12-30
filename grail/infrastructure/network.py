@@ -39,18 +39,19 @@ class ResilientSubtensor:
     def __init__(
         self,
         subtensor: bt.subtensor,
-        timeout: float = 60.0,
+        timeout: float = 30.0,
         retries: int = 3,
-        backoff_base: float = 10.0,
+        backoff_base: float = 2.0,
     ):
         """
         Initialize resilient subtensor wrapper.
 
         Args:
             subtensor: The underlying bittensor subtensor instance
-            timeout: Timeout in seconds for each attempt (default: 15s)
+            timeout: Timeout in seconds for each attempt (default: 30s)
             retries: Number of retry attempts (default: 3)
-            backoff_base: Base multiplier for exponential backoff (default: 5s)
+            backoff_base: Base multiplier for exponential backoff (default: 2s)
+                         Gives retries at 2s, 4s, 8s = 14s total wait
         """
         object.__setattr__(self, "_subtensor", subtensor)
         object.__setattr__(self, "_timeout", timeout)
@@ -60,7 +61,7 @@ class ResilientSubtensor:
         object.__setattr__(self, "_failure_count", 0)
         object.__setattr__(self, "_circuit_open_until", 0.0)
         object.__setattr__(self, "_circuit_threshold", 2)  # Open after 2 consecutive call failures
-        object.__setattr__(self, "_circuit_timeout", 30.0)  # Stay open for 30s
+        object.__setattr__(self, "_circuit_timeout", 10.0)  # Stay open for 10s (was 30s)
         # Metagraph cache
         object.__setattr__(self, "_metagraph_cache", {})
         # Track last successful call for idle detection
@@ -409,9 +410,10 @@ async def create_subtensor(*, resilient: bool = True) -> bt.subtensor | Resilien
 
     if resilient:
         # Wrap with resilience layer for production use
+        # Fast retries: 2s, 4s, 8s = 14s total wait between retries
         timeout = float(os.getenv("BT_CALL_TIMEOUT", "15.0"))
         retries = int(os.getenv("BT_CALL_RETRIES", "3"))
-        backoff = float(os.getenv("BT_CALL_BACKOFF", "5.0"))
+        backoff = float(os.getenv("BT_CALL_BACKOFF", "2.0"))  # Fast retries (was 5.0)
 
         logger.info(
             "Wrapping subtensor with resilience layer (timeout=%ds, retries=%d, backoff=%ds)",
