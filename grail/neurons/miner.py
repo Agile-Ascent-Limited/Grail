@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 import traceback
 from types import SimpleNamespace
 
@@ -259,6 +260,34 @@ class MinerNeuron(BaseNeuron):
                 # LEADER (worker 0): Do blockchain initialization
                 logger.info("🎯 Worker 0 is LEADER - initializing blockchain connections...")
 
+                # Determine if this is the hub (node-1 worker-0) or a non-hub leader (node-2+ worker-0)
+                is_hub = redis_aggregator is not None and redis_aggregator.is_hub
+
+                # NON-HUB LEADERS: Wait for hub to be ready BEFORE heavy blockchain init
+                # This ensures node-2+ workers don't start slow init while hub is still starting
+                # Hub caches block early, so once hub is ready, block cache is available
+                if redis_aggregator is not None and not is_hub:
+                    logger.info("⏳ Non-hub leader waiting for hub to be ready...")
+                    wait_start = time.monotonic()
+                    max_wait = 120.0  # 2 minutes max wait for hub
+                    while not redis_aggregator.is_hub_ready():
+                        elapsed = time.monotonic() - wait_start
+                        if elapsed > max_wait:
+                            logger.warning(
+                                "⚠️ Hub not ready after %.0fs - proceeding anyway",
+                                elapsed,
+                            )
+                            break
+                        if int(elapsed) % 10 == 0 and elapsed > 0:
+                            logger.info(
+                                "⏳ Still waiting for hub (%.0fs)...",
+                                elapsed,
+                            )
+                        await asyncio.sleep(1.0)
+                    else:
+                        elapsed = time.monotonic() - wait_start
+                        logger.info("✅ Hub ready after %.1fs - proceeding with init", elapsed)
+
                 # Get subtensor and metagraph for chain manager
                 subtensor = await self.get_subtensor()
                 self.heartbeat()
@@ -266,7 +295,6 @@ class MinerNeuron(BaseNeuron):
                 # HUB EARLY CACHE: If this is the hub (node-1 worker-0), cache block to Redis
                 # immediately so other nodes can start their mining loop without waiting.
                 # This reduces cross-node startup lag significantly.
-                is_hub = redis_aggregator is not None and redis_aggregator.is_hub
                 if is_hub:
                     try:
                         early_block = await subtensor.get_current_block()
