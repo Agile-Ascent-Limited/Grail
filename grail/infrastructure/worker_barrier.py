@@ -29,6 +29,10 @@ BLOCK_CACHE_FILE = "current-block.txt"  # Lightweight block sharing
 # How long barrier data is considered fresh (seconds)
 BARRIER_MAX_AGE = 600  # 10 minutes
 
+# Barrier files older than this are definitely stale and should be deleted
+# (even by followers) - prevents 25-hour-old files from blocking startup
+BARRIER_STALE_THRESHOLD = 3600  # 1 hour - anything older is definitely stale
+
 # Maximum problems per window (configurable via env var)
 # Default 500 supports ~8 H200s at 2 rollouts/s for 300s windows
 MAX_PROBLEMS_PER_WINDOW = int(os.getenv("GRAIL_MAX_PROBLEMS_PER_WINDOW", "500"))
@@ -72,10 +76,14 @@ class WorkerBarrier:
         self.run_id_file = self.barrier_dir / RUN_ID_FILE
         self.block_cache_file = self.barrier_dir / BLOCK_CACHE_FILE
 
+        # ALL workers clean up very stale files on startup to prevent
+        # 25-hour-old barrier files from blocking new runs
+        self._ensure_barrier_dir()
+        self._cleanup_very_stale_files()
+
         # Generate or read run ID
         if self.is_leader:
             # Leader generates new run ID and cleans up stale files
-            self._ensure_barrier_dir()
             self.run_id = str(uuid.uuid4())[:8]  # Short unique ID
             self._cleanup_stale_barrier()
             # Write run ID immediately so followers can read it
@@ -101,6 +109,47 @@ class WorkerBarrier:
                 logger.info("Leader removed stale barrier file from previous run")
             except IOError as e:
                 logger.warning("Failed to remove stale barrier file: %s", e)
+
+    def _cleanup_very_stale_files(self) -> None:
+        """
+        Remove very stale files on ANY worker startup.
+
+        This prevents scenarios where a 25-hour-old barrier file blocks new runs.
+        Files older than BARRIER_STALE_THRESHOLD (1 hour) are deleted.
+        """
+        if not self.barrier_dir.exists():
+            return
+
+        try:
+            now = time.time()
+            removed = 0
+
+            for f in self.barrier_dir.iterdir():
+                try:
+                    # Check file modification time
+                    mtime = f.stat().st_mtime
+                    age = now - mtime
+
+                    if age > BARRIER_STALE_THRESHOLD:
+                        f.unlink()
+                        removed += 1
+                        logger.info(
+                            "Worker %d removed very stale file: %s (%.0f hours old)",
+                            self.worker_id,
+                            f.name,
+                            age / 3600,
+                        )
+                except (IOError, OSError):
+                    pass  # Skip files we can't access
+
+            if removed > 0:
+                logger.info(
+                    "Worker %d cleaned up %d stale barrier files on startup",
+                    self.worker_id,
+                    removed,
+                )
+        except Exception as e:
+            logger.warning("Failed to cleanup stale files: %s", e)
 
     def _ensure_barrier_dir(self) -> None:
         """Create barrier directory if needed."""
@@ -203,7 +252,21 @@ class WorkerBarrier:
                         )
                         return data
                     else:
-                        logger.debug("Barrier file exists but is stale, waiting...")
+                        # Check if VERY stale (hours old) - delete and wait for fresh one
+                        timestamp = data.get("timestamp", 0)
+                        age = time.time() - timestamp
+                        if age > BARRIER_STALE_THRESHOLD:
+                            logger.warning(
+                                "Worker %d deleting very stale barrier file (%.1f hours old)",
+                                self.worker_id,
+                                age / 3600,
+                            )
+                            try:
+                                self.barrier_file.unlink()
+                            except IOError:
+                                pass
+                        else:
+                            logger.debug("Barrier file exists but is stale, waiting...")
                 except (json.JSONDecodeError, IOError) as e:
                     logger.debug("Error reading barrier file: %s", e)
 
@@ -592,6 +655,7 @@ def is_leader_worker() -> bool:
 
 ROLLOUT_STAGING_DIR = ".rollout-staging"
 ROLLOUT_STAGING_MAX_AGE = 300  # 5 minutes - older files are stale
+ROLLOUT_STAGING_STALE_THRESHOLD = 3600  # 1 hour - delete files older than this on any worker startup
 
 
 class RolloutStaging:
@@ -615,10 +679,53 @@ class RolloutStaging:
         self.staging_dir = self.cache_root / ROLLOUT_STAGING_DIR
         self.staging_dir.mkdir(parents=True, exist_ok=True)
 
-        # Leader cleans up all stale staging files on startup to prevent
+        # ALL workers clean up very stale staging files on startup
+        # This prevents hours-old files from causing issues
+        self._cleanup_very_stale_staging_files()
+
+        # Leader also cleans up ALL staging files on startup to prevent
         # duplicate nonce errors from previous runs
         if self.is_leader:
             self._cleanup_all_staging_files()
+
+    def _cleanup_very_stale_staging_files(self) -> None:
+        """
+        Remove very stale staging files on ANY worker startup.
+
+        This prevents scenarios where hours-old staging files cause issues.
+        Files older than ROLLOUT_STAGING_STALE_THRESHOLD (1 hour) are deleted.
+        """
+        try:
+            now = time.time()
+            removed = 0
+
+            for f in self.staging_dir.iterdir():
+                if f.suffix not in (".json", ".done", ".tmp", ".uploaded"):
+                    continue
+                try:
+                    mtime = f.stat().st_mtime
+                    age = now - mtime
+
+                    if age > ROLLOUT_STAGING_STALE_THRESHOLD:
+                        f.unlink()
+                        removed += 1
+                        logger.debug(
+                            "Worker %d removed very stale staging file: %s (%.1f hours old)",
+                            self.worker_id,
+                            f.name,
+                            age / 3600,
+                        )
+                except (IOError, OSError):
+                    pass
+
+            if removed > 0:
+                logger.info(
+                    "Worker %d cleaned up %d very stale staging files on startup",
+                    self.worker_id,
+                    removed,
+                )
+        except Exception as e:
+            logger.warning("Failed to cleanup very stale staging files: %s", e)
 
     def _cleanup_all_staging_files(self) -> None:
         """Leader removes all staging files on startup to prevent stale data mixing."""
