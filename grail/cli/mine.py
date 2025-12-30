@@ -46,7 +46,7 @@ logger = logging.getLogger("grail")
 EMA_ALPHA = 0.2  # Exponential moving average smoothing
 
 MINER_SAFETY_BLOCKS = int(  # Safety margin blocks before window end
-    os.getenv("GRAIL_MINER_SAFETY_BLOCKS", "3")
+    os.getenv("GRAIL_MINER_SAFETY_BLOCKS", "1")
 )
 MINER_BUFFER_SECONDS = float(  # Extra seconds buffer for fine-tuning upload timing
     os.getenv("GRAIL_MINER_BUFFER_SECONDS", "0")
