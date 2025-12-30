@@ -1633,6 +1633,54 @@ class RedisRolloutAggregator:
         except Exception:
             return None
 
+    # -------------------------------------------------------------------------
+    # Hub ready signal (for cross-node startup coordination)
+    # -------------------------------------------------------------------------
+    HUB_READY_KEY = "grail:hub:ready"
+    HUB_READY_TTL = 300  # 5 minutes - should be renewed during mining
+
+    def signal_hub_ready(self) -> None:
+        """
+        Signal that the hub is fully initialized and ready.
+
+        Called by hub after completing initialization. Other nodes can check
+        this to know when the hub is available for coordination.
+        """
+        if not self.is_hub:
+            return
+        try:
+            import time
+            self.client.setex(self.HUB_READY_KEY, self.HUB_READY_TTL, str(int(time.time())))
+            logger.info("🌐 Hub signaled ready to Redis")
+        except Exception as e:
+            logger.warning("Failed to signal hub ready: %s", e)
+
+    def is_hub_ready(self) -> bool:
+        """
+        Check if the hub has signaled ready.
+
+        Returns:
+            True if hub is ready, False otherwise
+        """
+        try:
+            value = self.client.get(self.HUB_READY_KEY)
+            return value is not None
+        except Exception:
+            return False
+
+    def get_hub_ready_time(self) -> int | None:
+        """
+        Get the timestamp when hub became ready.
+
+        Returns:
+            Unix timestamp or None if not ready
+        """
+        try:
+            value = self.client.get(self.HUB_READY_KEY)
+            return int(value) if value else None
+        except Exception:
+            return None
+
 
 def get_redis_rollout_aggregator(
     worker_id: int | None = None,

@@ -262,6 +262,19 @@ class MinerNeuron(BaseNeuron):
                 # Get subtensor and metagraph for chain manager
                 subtensor = await self.get_subtensor()
                 self.heartbeat()
+
+                # HUB EARLY CACHE: If this is the hub (node-1 worker-0), cache block to Redis
+                # immediately so other nodes can start their mining loop without waiting.
+                # This reduces cross-node startup lag significantly.
+                is_hub = redis_aggregator is not None and redis_aggregator.is_hub
+                if is_hub:
+                    try:
+                        early_block = await subtensor.get_current_block()
+                        redis_aggregator.cache_current_block(early_block)
+                        logger.info("🌐 Hub early cache: block %d → Redis (other nodes can start)", early_block)
+                    except Exception as e:
+                        logger.warning("Failed to early-cache block to Redis: %s", e)
+
                 metagraph = await subtensor.metagraph(netuid)
                 self.heartbeat()
 
@@ -294,6 +307,10 @@ class MinerNeuron(BaseNeuron):
                 # Register cleanup on shutdown
                 self.register_shutdown_callback(barrier.cleanup)
                 logger.info("✅ Leader signaled ready to followers")
+
+                # Hub signals ready to Redis for cross-node coordination
+                if is_hub:
+                    redis_aggregator.signal_hub_ready()
 
             else:
                 # FOLLOWER (workers 1-7): Wait for leader, skip blockchain init
