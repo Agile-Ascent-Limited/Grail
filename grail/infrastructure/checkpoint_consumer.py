@@ -1045,6 +1045,12 @@ class CheckpointManager:
                 logger.warning("Missing checkpoint file %s", file_path)
                 return False
 
+            # Skip hash verification for files with placeholder hash from reconstructed checkpoints
+            # These use "reconstructed" as a marker instead of actual hash (see _write_reconstructed_checkpoint)
+            if expected_hash == "reconstructed":
+                logger.debug("Skipping hash verification for %s (reconstructed checkpoint)", filename)
+                continue
+
             digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
             if digest != expected_hash:
                 logger.warning(
