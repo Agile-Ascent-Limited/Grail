@@ -370,6 +370,10 @@ class MinerNeuron(BaseNeuron):
                 self.heartbeat()
                 logger.info(f"Started monitoring run: {run_id} (name={run_name})")
 
+            # Persistent prefetch task reference - survives across loop iterations
+            # This ensures we can await it and check its result at checkpoint loading time
+            prefetch_task: asyncio.Task | None = None
+
             while not self.stop_event.is_set():
                 try:
                     # Track if checkpoint changed this iteration (for cleanup timing)
@@ -472,6 +476,32 @@ class MinerNeuron(BaseNeuron):
                             logger.info(
                                 f"⏳ Leader has checkpoint {leader_ckpt}, will sync..."
                             )
+
+                    # PREFETCH COMPLETION: If prefetch task exists, await it with timeout
+                    # This ensures prefetch benefits are realized before we try to download
+                    if prefetch_task is not None and not prefetch_task.done():
+                        logger.info("⏳ Waiting for prefetch to complete (max 10s)...")
+                        try:
+                            await asyncio.wait_for(prefetch_task, timeout=10.0)
+                            logger.info("✅ Prefetch completed - checkpoint should be cached")
+                        except asyncio.TimeoutError:
+                            logger.warning("⚠️ Prefetch timed out - will download checkpoint normally")
+                            prefetch_task.cancel()
+                            try:
+                                await prefetch_task
+                            except asyncio.CancelledError:
+                                pass
+                        except Exception as e:
+                            logger.debug(f"Prefetch failed: {e}")
+                        prefetch_task = None
+                    elif prefetch_task is not None and prefetch_task.done():
+                        # Prefetch already completed - check for errors
+                        try:
+                            prefetch_task.result()
+                            logger.debug("Prefetch already completed successfully")
+                        except Exception as e:
+                            logger.debug(f"Prefetch completed with error: {e}")
+                        prefetch_task = None
 
                     # Discover latest ready checkpoint (before current window)
                     # This allows miners to proceed even if trainer is lagging
@@ -700,8 +730,8 @@ class MinerNeuron(BaseNeuron):
                         redis_aggregator=redis_aggregator,  # For centralized block sync
                     )
 
-                    # Prefetch task will be started AFTER upload completes (see below)
-                    prefetch_task = None
+                    # Note: prefetch_task persists across iterations - don't reset here
+                    # It will be awaited at checkpoint loading time in the next iteration
 
                     if inferences:
                         # Choose aggregation mode: Redis (preferred) or file-based (fallback)
@@ -1003,24 +1033,22 @@ class MinerNeuron(BaseNeuron):
 
                     last_window_start = window_start
 
-                    # Fire-and-forget prefetch - don't block next window
-                    # If prefetch is still running, next window's get_checkpoint() will:
-                    # 1. Find cached checkpoint if prefetch completed → fast load
-                    # 2. Wait on download lock if prefetch in progress → no duplicate work
-                    # 3. Download from scratch if prefetch failed → same as before
+                    # Prefetch status check - keep reference if still running
+                    # Next iteration will await it with timeout at checkpoint loading time
                     if prefetch_task is not None:
                         if not prefetch_task.done():
                             logger.info(
-                                "⏩ Prefetch still running - continuing to next window "
-                                "(checkpoint will be ready or downloaded at window start)"
+                                "⏩ Prefetch still running - will await at next window start"
                             )
+                            # DON'T set to None - keep reference for next iteration
                         else:
-                            # Prefetch completed, check for errors
+                            # Prefetch completed, check for errors and clear reference
                             try:
                                 prefetch_task.result()
+                                logger.info("✅ Prefetch completed successfully")
                             except Exception as e:
                                 logger.debug(f"Prefetch completed with error (non-critical): {e}")
-                        prefetch_task = None
+                            prefetch_task = None
 
                     # Only leader should cleanup checkpoints, and only after a new
                     # checkpoint was loaded (ensures all workers have moved to new one)
