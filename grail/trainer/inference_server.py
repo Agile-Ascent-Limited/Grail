@@ -403,6 +403,15 @@ class VLLMServerManager(InferenceServerManager):
         if not python_path:
             return
 
+        # Clean up any zombie processes that might be blocking our port or GPU
+        # This is especially important after PM2 restarts or unexpected shutdowns
+        from grail.infrastructure.process_cleanup import cleanup_vllm_for_port
+
+        target_port = self._config.port if self._config.port > 0 else None
+        if target_port:
+            if cleanup_vllm_for_port(target_port, grace_period=2.0):
+                logger.info("Cleaned up zombie process on port %d before startup", target_port)
+
         # Allocate port and build command
         self._bound_port = self._allocate_port()
         cmd = self._build_command(python_path)
@@ -449,7 +458,9 @@ class VLLMServerManager(InferenceServerManager):
         is_ready = await self._wait_for_server_ready(ready_url, self._config.timeout_s)
 
         if not is_ready:
-            await self._terminate_process(self._process, wait_for_gpu=False)
+            # Wait for GPU memory release even on startup failure to prevent
+            # zombie processes from blocking subsequent startup attempts
+            await self._terminate_process(self._process, wait_for_gpu=True)
             self._process = None
             self._bound_port = None
             return
