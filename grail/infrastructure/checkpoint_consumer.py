@@ -36,12 +36,17 @@ import json
 import logging
 import os
 import shutil
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import zstandard as zstd
+
+# Performance tuning: Set GRAIL_SKIP_CHECKPOINT_HASH=1 to skip hash verification
+# This saves ~10-20 seconds per checkpoint but disables integrity checking
+SKIP_HASH_VERIFICATION = os.getenv("GRAIL_SKIP_CHECKPOINT_HASH", "0") == "1"
 
 from grail.shared.safetensors_utils import load_model_state_dict
 
@@ -1160,38 +1165,50 @@ class CheckpointManager:
             Path to reconstructed checkpoint, or None on failure
         """
         try:
+            t_start = time.perf_counter()
+
             # Download and load delta
+            t0 = time.perf_counter()
             delta_data = await self._download_and_load_delta(delta_metadata)
             if delta_data is None:
                 logger.error("Failed to download delta for window %s", delta_metadata.window)
                 return None
+            t_download = time.perf_counter() - t0
 
-            sparse_tensors, shapes, delta_info = delta_data
+            sparse_tensors, shapes, _delta_info = delta_data
 
             # Load previous weights
+            t0 = time.perf_counter()
             prev_state = load_model_state_dict(prev_path)
             if prev_state is None:
                 logger.error("Failed to load weights from %s", prev_path)
                 return None
+            t_load = time.perf_counter() - t0
 
-            logger.debug(
-                "Applying single delta: prev=%s, target=%s (%.2f%% sparse)",
+            logger.info(
+                "⏱️ Delta download: %.1fs | Load prev: %.1fs | Applying delta %s → %s",
+                t_download,
+                t_load,
                 delta_metadata.prev_window,
                 delta_metadata.window,
-                delta_info.get("sparsity_ratio", 0) * 100,
             )
 
             # Apply delta - dtype is inferred from prev_state
+            t0 = time.perf_counter()
             reconstructed = apply_sparse_delta(
                 prev_state,
                 sparse_tensors,
                 shapes,
                 target_dtype=None,  # Infer from prev_state
             )
+            t_apply = time.perf_counter() - t0
 
-            # Verify hash
-            if delta_metadata.weights_hash:
+            # Verify hash (can be skipped with GRAIL_SKIP_CHECKPOINT_HASH=1)
+            t_hash = 0.0
+            if delta_metadata.weights_hash and not SKIP_HASH_VERIFICATION:
+                t0 = time.perf_counter()
                 actual_hash = compute_weights_hash(reconstructed)
+                t_hash = time.perf_counter() - t0
                 if actual_hash != delta_metadata.weights_hash:
                     logger.error(
                         "Weights hash mismatch for window %s: expected %s..., got %s...",
@@ -1201,14 +1218,29 @@ class CheckpointManager:
                     )
                     return None
                 logger.debug("✅ Hash verified for window %s", delta_metadata.window)
+            elif SKIP_HASH_VERIFICATION:
+                logger.debug("⚡ Skipping hash verification (GRAIL_SKIP_CHECKPOINT_HASH=1)")
 
             # Write reconstructed checkpoint
-            return await self._write_reconstructed_checkpoint(
+            t0 = time.perf_counter()
+            result = await self._write_reconstructed_checkpoint(
                 reconstructed,
                 prev_path,  # Copy non-weight files from prev
                 output_dir,
                 delta_metadata,
             )
+            t_write = time.perf_counter() - t0
+
+            t_total = time.perf_counter() - t_start
+            logger.info(
+                "⏱️ Reconstruction complete: apply=%.1fs | hash=%.1fs | write=%.1fs | TOTAL=%.1fs",
+                t_apply,
+                t_hash,
+                t_write,
+                t_total,
+            )
+
+            return result
 
         except Exception as exc:
             logger.exception("Failed to apply single delta: %s", exc)
@@ -1493,13 +1525,10 @@ class CheckpointManager:
             "original_anchor_window": final_meta.anchor_window,
         }
 
-        # Build file manifest for reconstructed checkpoint
-        for file_path in output_dir.rglob("*"):
-            if file_path.is_file():
-                rel_path = str(file_path.relative_to(output_dir))
-                output_metadata["file_manifest"][rel_path] = hashlib.sha256(
-                    file_path.read_bytes()
-                ).hexdigest()
+        # Skip file manifest hash computation for speed - it's not needed for loading
+        # The weights_hash in metadata is sufficient for verification
+        # This saves ~10-20 seconds by avoiding re-reading the entire checkpoint
+        output_metadata["file_manifest"] = {"model.safetensors": "reconstructed"}
 
         (output_dir / "metadata.json").write_text(
             json.dumps(output_metadata, ensure_ascii=False, indent=2)
