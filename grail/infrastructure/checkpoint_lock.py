@@ -188,6 +188,11 @@ class CheckpointLock:
         start_time = time.time()
         checkpoint_dir = self.cache_root / f"checkpoint-{self.window}"
 
+        # RACE CONDITION FIX: Leader might not have acquired lock yet.
+        # Wait up to 30 seconds for a lock to appear before assuming failure.
+        lock_wait_timeout = 30.0
+        lock_appeared = False
+
         while time.time() - start_time < timeout:
             # Check if download completed - ONLY trust .complete file when waiting.
             # We don't check checkpoint validity here because for sharded models,
@@ -204,13 +209,30 @@ class CheckpointLock:
                 )
                 return True
 
+            # Track if we've ever seen a lock (means leader started downloading)
+            if self._lock_file.exists():
+                lock_appeared = True
+
             # Check if lock was released without completion (download failed)
+            # Only check this AFTER we've seen a lock appear, or after lock_wait_timeout
+            elapsed = time.time() - start_time
             if not self._lock_file.exists() and not self._complete_file.exists():
-                logger.warning(
-                    "Lock released without completion for checkpoint %s, will retry",
-                    self.window,
-                )
-                return False
+                if lock_appeared:
+                    # Lock existed but is now gone without completion - download failed
+                    logger.warning(
+                        "Lock released without completion for checkpoint %s, will retry",
+                        self.window,
+                    )
+                    return False
+                elif elapsed > lock_wait_timeout:
+                    # Never saw a lock after waiting - leader might have failed to start
+                    logger.warning(
+                        "No lock appeared for checkpoint %s after %.0fs, leader may have failed",
+                        self.window,
+                        elapsed,
+                    )
+                    return False
+                # else: Still waiting for lock to appear, continue polling
 
             # Wait and poll again
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
