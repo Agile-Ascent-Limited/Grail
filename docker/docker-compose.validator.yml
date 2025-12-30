@@ -61,7 +61,7 @@ services:
       # Network timeout and retry configuration
       - BT_CALL_TIMEOUT=${BT_CALL_TIMEOUT:-15.0}
       - BT_CALL_RETRIES=${BT_CALL_RETRIES:-3}
-      - BT_CALL_BACKOFF=${BT_CALL_BACKOFF:-5.0}
+      - BT_CALL_BACKOFF=${BT_CALL_BACKOFF:-2.0}
       
       # Logging configuration
       - PROMTAIL_ENABLE=${PROMTAIL_ENABLE:-true}

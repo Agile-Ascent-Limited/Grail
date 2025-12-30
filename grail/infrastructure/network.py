@@ -351,7 +351,7 @@ async def create_subtensor(*, resilient: bool = True) -> bt.subtensor | Resilien
         BT_CHAIN_ENDPOINT: Custom WebSocket endpoint URL
         BT_CALL_TIMEOUT: Timeout in seconds for blockchain calls (default: 15.0)
         BT_CALL_RETRIES: Number of retry attempts (default: 3)
-        BT_CALL_BACKOFF: Base backoff multiplier in seconds (default: 5.0)
+        BT_CALL_BACKOFF: Base backoff multiplier in seconds (default: 2.0)
 
     Returns:
         Initialized subtensor instance (optionally wrapped with resilience layer)
