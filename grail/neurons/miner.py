@@ -493,23 +493,16 @@ class MinerNeuron(BaseNeuron):
                     hub_checkpoint_hint: int | None = None
                     if barrier.is_leader and redis_aggregator is not None and not is_hub:
                         # Wait for hub to broadcast checkpoint (with timeout)
-                        # Accept ANY checkpoint from hub (even if same as current) to skip discovery
                         wait_start = time.monotonic()
                         max_hub_wait = 15.0  # Wait up to 15s for hub's checkpoint broadcast
                         while True:
                             redis_ckpt, _ = redis_aggregator.get_redis_checkpoint()
-                            if redis_ckpt is not None:
+                            if redis_ckpt is not None and redis_ckpt != current_checkpoint_window:
                                 elapsed = time.monotonic() - wait_start
-                                if redis_ckpt != current_checkpoint_window:
-                                    logger.info(
-                                        f"📡 Non-hub leader: Hub broadcast NEW checkpoint {redis_ckpt} "
-                                        f"(waited {elapsed:.1f}s), will download"
-                                    )
-                                else:
-                                    logger.info(
-                                        f"📡 Non-hub leader: Hub confirms checkpoint {redis_ckpt} "
-                                        f"(waited {elapsed:.1f}s), already loaded - skip discovery"
-                                    )
+                                logger.info(
+                                    f"📡 Non-hub leader: Hub broadcast checkpoint {redis_ckpt} "
+                                    f"(waited {elapsed:.1f}s), using for parallel download"
+                                )
                                 hub_checkpoint_hint = redis_ckpt
                                 break
                             elapsed = time.monotonic() - wait_start
@@ -587,20 +580,21 @@ class MinerNeuron(BaseNeuron):
 
                     # Load checkpoint if discovered and different from current
                     if checkpoint_window is not None and checkpoint_window >= 0:
-                        # Hub ALWAYS broadcasts checkpoint to Redis (even if same as before)
-                        # so non-hub leaders can skip discovery immediately
-                        if is_hub and redis_aggregator is not None:
-                            redis_aggregator.broadcast_checkpoint(
-                                checkpoint_window, f"checkpoint-{checkpoint_window}"
-                            )
-                            logger.info(
-                                f"🌐 Hub: Broadcast checkpoint {checkpoint_window} to Redis"
-                            )
-
                         if current_checkpoint_window != checkpoint_window:
                             # Leader signals to followers that it's downloading
                             if barrier.is_leader:
                                 barrier.signal_checkpoint_downloading(checkpoint_window)
+
+                            # Hub broadcasts checkpoint to Redis IMMEDIATELY so other nodes
+                            # can skip discovery and start parallel downloads
+                            if is_hub and redis_aggregator is not None:
+                                redis_aggregator.broadcast_checkpoint(
+                                    checkpoint_window, f"downloading-{checkpoint_window}"
+                                )
+                                logger.info(
+                                    f"🌐 Hub: Broadcast checkpoint {checkpoint_window} to Redis "
+                                    f"(other nodes can start parallel download)"
+                                )
 
                             # Time checkpoint download/retrieval
                             timer_ctx = (
