@@ -519,9 +519,12 @@ class VLLMServerManager(InferenceServerManager):
     async def reload_with_new_checkpoint(self, new_checkpoint_path: str) -> None:
         """Reload vLLM server with updated model checkpoint.
 
-        Uses fast reload: kills old process immediately and starts new one without
-        waiting for GPU memory to be fully released. The new process will claim
-        GPU memory as the old one releases it.
+        Uses fast reload by default: kills old process immediately and starts new
+        one without waiting for GPU memory to be fully released.
+
+        For memory-constrained GPUs (e.g., A6000 48GB), set GRAIL_VLLM_SLOW_RELOAD=1
+        to wait for GPU memory release before starting the new server. This prevents
+        OOM when both processes briefly compete for GPU memory.
 
         Args:
             new_checkpoint_path: Path to updated model checkpoint directory
@@ -533,26 +536,50 @@ class VLLMServerManager(InferenceServerManager):
         if not os.path.exists(new_checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {new_checkpoint_path}")
 
-        logger.info(
-            "🔄 Fast reload: %s",
-            os.path.basename(new_checkpoint_path),
-        )
+        # Check for slow reload mode (for memory-constrained GPUs like A6000)
+        slow_reload = os.getenv("GRAIL_VLLM_SLOW_RELOAD", "0").lower() in ("1", "true", "yes")
+
+        if slow_reload:
+            logger.info(
+                "🔄 Slow reload (waiting for GPU memory): %s",
+                os.path.basename(new_checkpoint_path),
+            )
+        else:
+            logger.info(
+                "🔄 Fast reload: %s",
+                os.path.basename(new_checkpoint_path),
+            )
 
         try:
-            # Fast kill: don't wait for GPU memory release
-            await self._fast_kill_server()
+            if slow_reload:
+                # Slow reload: fully stop server and wait for GPU memory release
+                await self._stop_server()
+                # Extra wait for CUDA to fully release memory
+                await asyncio.sleep(2.0)
+                # Clear CUDA cache if torch is available
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        logger.debug("Cleared CUDA cache before server restart")
+                except Exception:
+                    pass
+            else:
+                # Fast kill: don't wait for GPU memory release
+                await self._fast_kill_server()
 
             # Update config to point to new checkpoint
             self._config.model_path = new_checkpoint_path
 
-            # Start new server immediately - it will claim GPU as old one releases
+            # Start new server
             await self._start_server()
 
             if self._process is None or self._bound_port is None:
                 raise RuntimeError("Failed to restart vLLM server after reload")
 
+            reload_mode = "slow" if slow_reload else "fast"
             logger.info(
-                "✅ vLLM reloaded in fast mode",
+                f"✅ vLLM reloaded in {reload_mode} mode",
                 extra={
                     "checkpoint": new_checkpoint_path,
                     "url": self.base_url,

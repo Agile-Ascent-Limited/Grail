@@ -626,6 +626,9 @@ async def generate_rollouts_for_window(
     is_hub = redis_aggregator is not None and redis_aggregator.is_hub
     should_reset_counter = is_hub or (redis_aggregator is None and is_leader)
 
+    # Track which nodes have been signaled early stop (avoid duplicate signals)
+    nodes_signaled_early_stop: set[str] = set()
+
     if should_reset_counter:
         problem_queue.reset_counter(window_start)
     elif not is_hub and redis_aggregator is not None:
@@ -730,6 +733,19 @@ async def generate_rollouts_for_window(
             # HUB and single-node mode: Use block timing to decide when to stop
             blocks_remaining = (window_start + WINDOW_LENGTH) - current_block
             needed_blocks = timers.blocks_needed_for_next_gen()
+
+            # HUB: Check if any nodes need early stop signal (per-node buffers)
+            # This signals slow nodes to stop before the hub would normally stop.
+            # E.g., GRAIL_STOP_BUFFER_node-2=2 means node-2 stops 2 blocks earlier.
+            if is_hub and redis_aggregator is not None:
+                nodes_to_signal = redis_aggregator.get_nodes_needing_early_stop(
+                    blocks_remaining, needed_blocks
+                )
+                for node_id in nodes_to_signal:
+                    if node_id not in nodes_signaled_early_stop:
+                        redis_aggregator.signal_generation_stop_for_node(window_start, node_id)
+                        nodes_signaled_early_stop.add(node_id)
+
             if blocks_remaining <= needed_blocks:
                 logger.info(
                     (

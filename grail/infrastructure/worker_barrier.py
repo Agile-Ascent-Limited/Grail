@@ -1125,6 +1125,53 @@ class RedisRolloutAggregator:
             total_workers,
         )
 
+        # Hub parses per-node stop buffers from env vars
+        # GRAIL_STOP_BUFFER_node-1=0, GRAIL_STOP_BUFFER_node-2=2, etc.
+        self.node_stop_buffers: dict[str, int] = {}
+        if is_hub:
+            self.node_stop_buffers = self._parse_node_stop_buffers()
+            if self.node_stop_buffers:
+                logger.info(
+                    "🛑 Per-node stop buffers configured: %s",
+                    self.node_stop_buffers,
+                )
+
+    def _parse_node_stop_buffers(self) -> dict[str, int]:
+        """
+        Parse per-node stop buffer configuration from environment variables.
+
+        Looks for GRAIL_STOP_BUFFER_{node_id}=N where N is the number of blocks
+        to add to the safety margin for that specific node.
+
+        Example:
+            GRAIL_STOP_BUFFER_node-1=0   # Hub itself, no extra buffer
+            GRAIL_STOP_BUFFER_node-2=2   # Send stop to node-2 two blocks earlier
+
+        Returns:
+            Dict mapping node_id to stop buffer (in blocks)
+        """
+        buffers = {}
+        prefix = "GRAIL_STOP_BUFFER_"
+        for key, value in os.environ.items():
+            if key.startswith(prefix):
+                node_id = key[len(prefix):]
+                try:
+                    buffer_blocks = int(value)
+                    if buffer_blocks > 0:
+                        buffers[node_id] = buffer_blocks
+                        logger.debug(
+                            "Parsed stop buffer: node=%s, buffer=%d blocks",
+                            node_id,
+                            buffer_blocks,
+                        )
+                except ValueError:
+                    logger.warning(
+                        "Invalid stop buffer value for %s: %s (expected integer)",
+                        key,
+                        value,
+                    )
+        return buffers
+
     def _generate_node_id(self) -> str:
         """Generate a unique node identifier."""
         import socket
@@ -1701,8 +1748,13 @@ class RedisRolloutAggregator:
     # -------------------------------------------------------------------------
     # When hub reaches safety blocks, it signals stop. All workers check this
     # and stop generating immediately, ensuring synchronized window completion.
+    #
+    # Per-node stop buffers allow slow nodes to stop earlier:
+    #   GRAIL_STOP_BUFFER_node-2=2  →  node-2 stops 2 blocks before normal
+    # Hub signals these nodes early via per-node Redis keys.
 
     GENERATION_STOP_KEY = "grail:generation:stop"
+    GENERATION_STOP_NODE_PREFIX = "grail:generation:stop:node:"
     GENERATION_STOP_TTL = 120  # 2 minutes - covers window transition
 
     def signal_generation_stop(self, window: int) -> None:
@@ -1719,16 +1771,63 @@ class RedisRolloutAggregator:
             return
         try:
             self.client.setex(self.GENERATION_STOP_KEY, self.GENERATION_STOP_TTL, str(window))
-            logger.info("🛑 Hub signaled STOP for window %d → Redis", window)
+            logger.info("🛑 Hub signaled STOP for window %d → Redis (all nodes)", window)
         except Exception as e:
             logger.warning("Failed to signal generation stop: %s", e)
+
+    def signal_generation_stop_for_node(self, window: int, node_id: str) -> None:
+        """
+        Signal a specific node to stop generating for this window.
+
+        Used with per-node stop buffers to signal slow nodes earlier.
+        The node will check its node-specific key in should_stop_generation().
+
+        Args:
+            window: The window to stop generating for
+            node_id: The node to signal (e.g., "node-2")
+        """
+        if not self.is_hub:
+            return
+        try:
+            key = f"{self.GENERATION_STOP_NODE_PREFIX}{node_id}"
+            self.client.setex(key, self.GENERATION_STOP_TTL, str(window))
+            logger.info(
+                "🛑 Hub signaled STOP for node %s, window %d → Redis (early stop)",
+                node_id,
+                window,
+            )
+        except Exception as e:
+            logger.warning("Failed to signal generation stop for node %s: %s", node_id, e)
+
+    def get_nodes_needing_early_stop(self, blocks_remaining: int, needed_blocks: int) -> list[str]:
+        """
+        Get list of nodes that need early stop signal based on current timing.
+
+        Called by hub in generation loop to determine which nodes need
+        early stop signals based on their configured buffers.
+
+        Args:
+            blocks_remaining: Blocks left in current window
+            needed_blocks: Blocks needed for next generation (hub's calculation)
+
+        Returns:
+            List of node_ids that need stop signal now
+        """
+        nodes_to_stop = []
+        for node_id, buffer_blocks in self.node_stop_buffers.items():
+            # Node needs stop when: blocks_remaining <= needed_blocks + buffer
+            threshold = needed_blocks + buffer_blocks
+            if blocks_remaining <= threshold:
+                nodes_to_stop.append(node_id)
+        return nodes_to_stop
 
     def should_stop_generation(self, window: int) -> bool:
         """
         Check if hub has signaled to stop generating for this window.
 
-        Called by non-hub workers in the generation loop. When True, workers
-        should immediately stop generating and proceed to upload.
+        Called by non-hub workers in the generation loop. Checks both:
+        1. Node-specific stop signal (for per-node buffers)
+        2. Global stop signal (for all nodes)
 
         Args:
             window: The current window being generated
@@ -1739,6 +1838,15 @@ class RedisRolloutAggregator:
         if self.is_hub:
             return False  # Hub decides for itself, doesn't check this
         try:
+            # First check node-specific stop signal (per-node buffer)
+            node_key = f"{self.GENERATION_STOP_NODE_PREFIX}{self.node_id}"
+            node_value = self.client.get(node_key)
+            if node_value is not None:
+                stop_window = int(node_value)
+                if stop_window == window:
+                    return True
+
+            # Then check global stop signal
             value = self.client.get(self.GENERATION_STOP_KEY)
             if value is None:
                 return False
@@ -1752,11 +1860,17 @@ class RedisRolloutAggregator:
         Clear the generation stop signal (called at start of new window).
 
         Hub calls this at the beginning of each window to reset state.
+        Clears both global and per-node stop signals.
         """
         if not self.is_hub:
             return
         try:
+            # Clear global stop
             self.client.delete(self.GENERATION_STOP_KEY)
+            # Clear per-node stops
+            for node_id in self.node_stop_buffers:
+                key = f"{self.GENERATION_STOP_NODE_PREFIX}{node_id}"
+                self.client.delete(key)
         except Exception:
             pass  # Non-critical
 

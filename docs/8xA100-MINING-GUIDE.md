@@ -1297,7 +1297,8 @@ The RTX A6000 has 48GB VRAM - sufficient for the 4B model but requires more cons
 # vLLM memory settings for A6000 48GB
 GRAIL_VLLM_GPU_MEMORY_UTIL=0.55    # ~26GB for KV cache (leaving headroom for model + activations)
 GRAIL_GENERATION_BATCH_SIZE=8      # Lower than A100 due to smaller VRAM
-GRAIL_VLLM_MAX_NUM_SEQS=32         # Concurrent sequences
+GRAIL_VLLM_MAX_NUM_SEQS=16         # Fewer concurrent sequences (32 may OOM)
+GRAIL_VLLM_SLOW_RELOAD=1           # Wait for GPU memory release between checkpoints
 ```
 
 **Memory breakdown (A6000 48GB):**
@@ -1314,11 +1315,13 @@ GRAIL_VLLM_MAX_NUM_SEQS=32         # Concurrent sequences
 
 **Comparison:**
 
-| GPU | VRAM | Recommended `GPU_MEMORY_UTIL` | Batch Size | Max Seqs |
-|-----|------|-------------------------------|------------|----------|
-| A100 80GB | 80GB | 0.85 | 16 | 32 |
-| A6000 48GB | 48GB | 0.55 | 8 | 32 |
-| RTX 4090 24GB | 24GB | 0.70 | 4 | 16 |
+| GPU | VRAM | Recommended `GPU_MEMORY_UTIL` | Batch Size | Max Seqs | Slow Reload |
+|-----|------|-------------------------------|------------|----------|-------------|
+| A100 80GB | 80GB | 0.85 | 16 | 32 | No |
+| A6000 48GB | 48GB | 0.55 | 8 | 16 | Yes |
+| RTX 4090 24GB | 24GB | 0.70 | 4 | 16 | Yes |
+
+**Why slow reload for smaller GPUs?** By default, vLLM uses "fast reload" which starts the new server before the old one fully releases GPU memory. On 80GB A100s this is fine - there's enough headroom. On 48GB A6000s, both processes briefly compete for memory and can cause OOM on the second window. `GRAIL_VLLM_SLOW_RELOAD=1` waits for full memory release before starting the new server.
 
 **Adding A6000 to existing multi-node setup:**
 
@@ -1333,6 +1336,23 @@ GRAIL_REDIS_URL=redis://hub-ip:6379/0 grail mine
 ```
 
 The A6000 will claim problems from the shared queue and contribute rollouts. While it generates fewer rollouts than A100 (due to smaller batches), every rollout counts toward the superlinear score formula.
+
+**Per-node stop buffer (for slow nodes):**
+
+When mixing slow nodes (like A6000) with fast nodes (like A100), the slow node may need more time to finish its last generation before the window ends. The hub can send an early stop signal to specific nodes:
+
+```bash
+# On the HUB (node-1) - configure stop buffers for slow nodes
+GRAIL_STOP_BUFFER_node-2=2   # Send stop to node-2 two blocks (~24s) earlier
+```
+
+This tells the hub: when calculating stop timing, signal node-2 to stop 2 blocks earlier than normal. This prevents the slow node from claiming problems it can't complete, avoiding gaps in rollouts.
+
+**How it works:**
+- Hub calculates it should stop at 5 blocks remaining (based on timing estimates)
+- With `GRAIL_STOP_BUFFER_node-2=2`, hub signals node-2 to stop at 7 blocks remaining
+- Node-2 gets the stop signal early, finishes its current generation, and stages rollouts
+- Hub continues generating for 2 more blocks, then stops and aggregates everything
 
 ---
 
@@ -1675,6 +1695,7 @@ Expected:
 | `GRAIL_HUB_MODE` | Hub only | Set to `1` on the hub node | `1` |
 | `GRAIL_NODE_ID` | Worker 0 only | Unique node identifier (auto-shared via Redis) | `node-1`, `node-2` |
 | `GRAIL_TOTAL_NODES` | Optional | Number of nodes (default: 4) | `4` |
+| `GRAIL_STOP_BUFFER_{node}` | Hub only | Early stop buffer for slow nodes (blocks) | `GRAIL_STOP_BUFFER_node-2=2` |
 
 **Note on `GRAIL_NODE_ID`:** You only need to set this on **Worker 0** of each node. Worker 0 stores the node_id in Redis at key `grail:config:node_id`, and Workers 1-7 automatically read it from Redis. This ensures all workers on the same node use a consistent identifier for problem claiming and rollout tracking.
 
