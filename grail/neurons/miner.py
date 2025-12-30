@@ -372,13 +372,25 @@ class MinerNeuron(BaseNeuron):
                         # Hub (node-1 worker-0) queries blockchain and caches to Redis
                         current_block = await subtensor.get_current_block()
                         redis_aggregator.cache_current_block(current_block)
+                        logger.debug("Hub: cached block %d to Redis", current_block)
                     elif redis_aggregator is not None:
-                        # All other workers: read from Redis (perfect sync)
+                        # All other workers: read from Redis only (never RPC)
+                        # Wait for hub to populate cache - ensures perfect sync
                         current_block = redis_aggregator.get_cached_block()
-                        if current_block is None:
-                            # Fallback to RPC only if Redis cache is empty (hub not started yet)
-                            logger.debug("Redis cache miss, falling back to RPC")
-                            current_block = await subtensor.get_current_block()
+                        wait_count = 0
+                        while current_block is None:
+                            wait_count += 1
+                            if wait_count == 1:
+                                logger.info("⏳ Waiting for hub to cache block to Redis...")
+                            elif wait_count % 10 == 0:
+                                logger.warning(
+                                    "⚠️ Still waiting for Redis block cache (%ds) - is hub running?",
+                                    wait_count,
+                                )
+                            await asyncio.sleep(1)
+                            current_block = redis_aggregator.get_cached_block()
+                        if wait_count > 0:
+                            logger.info("✅ Got block %d from Redis after %ds", current_block, wait_count)
                     else:
                         # No Redis configured - use RPC directly (single-node mode)
                         current_block = await subtensor.get_current_block()

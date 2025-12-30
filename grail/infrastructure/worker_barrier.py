@@ -1601,7 +1601,7 @@ class RedisRolloutAggregator:
     # Followers read from Redis instead of making independent RPC calls
 
     BLOCK_CACHE_KEY = "grail:blockchain:current_block"
-    BLOCK_CACHE_TTL = 12  # 12 seconds (~2 blocks)
+    BLOCK_CACHE_TTL = 60  # 60 seconds - long enough for any generation cycle
 
     def cache_current_block(self, block: int) -> None:
         """

@@ -670,11 +670,18 @@ async def generate_rollouts_for_window(
             current_block = await subtensor.get_current_block()
             redis_aggregator.cache_current_block(current_block)
         elif redis_aggregator is not None:
-            # All workers read from Redis (perfect cross-node sync)
+            # All workers read from Redis only (never RPC) - ensures perfect sync
             current_block = redis_aggregator.get_cached_block()
-            if current_block is None:
-                # Fallback to RPC if Redis cache empty
-                current_block = await subtensor.get_current_block()
+            wait_count = 0
+            while current_block is None:
+                wait_count += 1
+                if wait_count % 5 == 0:
+                    logger.warning(
+                        "⚠️ Waiting for Redis block cache in gen loop (%ds)...",
+                        wait_count,
+                    )
+                await asyncio.sleep(1)
+                current_block = redis_aggregator.get_cached_block()
         elif is_leader:
             # No Redis - local leader fetches and shares via file
             current_block = await subtensor.get_current_block()
