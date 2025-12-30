@@ -284,6 +284,9 @@ class BaseNeuron:
                 pass
 
         # Allow log buffers to flush
-        await asyncio.sleep(0.1)
+        try:
+            await asyncio.sleep(0.1)
+        except RuntimeError:
+            pass  # Event loop is closing, ignore
         # Reset for next lifecycle start if reused
         self._shutdown_source = None

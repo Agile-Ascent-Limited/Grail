@@ -140,7 +140,13 @@ class InferenceServerManager(ABC):
                 elapsed = _time.time() - (deadline - timeout_s)
                 logger.debug("Waiting for server (%.1fs): %s", elapsed, last_error)
 
-            await asyncio.sleep(0.5)
+            try:
+                await asyncio.sleep(0.5)
+            except RuntimeError as e:
+                if "Event loop is closed" in str(e):
+                    logger.warning("Event loop closed while waiting for server")
+                    return False
+                raise
 
         logger.warning("Server not ready after %.1fs: %s", timeout_s, last_error)
         return False

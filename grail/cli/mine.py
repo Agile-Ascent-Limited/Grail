@@ -562,6 +562,7 @@ async def generate_rollouts_for_window(
     checkpoint_window: int,
     worker_config: WorkerConfig | None = None,
     abort_check: Callable[[], bool] | None = None,
+    redis_aggregator: Any | None = None,
 ) -> list[dict]:
     """Generate as many GRPO rollouts as safely possible within a window.
 
@@ -587,6 +588,8 @@ async def generate_rollouts_for_window(
         worker_config: Optional multi-worker configuration for problem partitioning
         abort_check: Optional callback that returns True if generation should abort
                      (e.g., leader is downloading a new checkpoint)
+        redis_aggregator: Optional Redis aggregator for centralized block sync.
+                          Hub caches blocks to Redis, all workers read from Redis.
 
     Returns:
         List of signed rollout data ready for upload.
@@ -659,20 +662,28 @@ async def generate_rollouts_for_window(
             break
 
         # Fetch current block to check timing
-        # Leader fetches from chain and shares; followers read from cache
-        if is_leader:
+        # Hub fetches from chain and caches to Redis; all others read from Redis
+        is_hub = redis_aggregator is not None and redis_aggregator.is_hub
+
+        if is_hub:
+            # Hub queries blockchain and caches to Redis
+            current_block = await subtensor.get_current_block()
+            redis_aggregator.cache_current_block(current_block)
+        elif redis_aggregator is not None:
+            # All workers read from Redis (perfect cross-node sync)
+            current_block = redis_aggregator.get_cached_block()
+            if current_block is None:
+                # Fallback to RPC if Redis cache empty
+                current_block = await subtensor.get_current_block()
+        elif is_leader:
+            # No Redis - local leader fetches and shares via file
             current_block = await subtensor.get_current_block()
             barrier.update_shared_block(current_block)
-            logger.debug("Leader fetched block %d from RPC, shared to cache", current_block)
         else:
-            # Try shared block first (avoids RPC call)
+            # No Redis - followers read from file-based cache
             current_block = barrier.get_shared_block()
-            if current_block is not None:
-                logger.debug("Worker %d using cached block %d (saved RPC call)", worker_config.worker_id, current_block)
-            else:
-                # Fallback to RPC if cache stale/missing
+            if current_block is None:
                 current_block = await subtensor.get_current_block()
-                logger.debug("Worker %d cache miss, fetched block %d from RPC", worker_config.worker_id, current_block)
         timers.update_block_time_ema(current_block)
         current_window = calculate_window_start(current_block)
         if current_window > window_start:

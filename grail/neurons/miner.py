@@ -364,21 +364,24 @@ class MinerNeuron(BaseNeuron):
                     # Use shared subtensor from base class
                     subtensor = await self.get_subtensor()
 
-                    # Get current block: leader queries RPC and caches, followers read from cache
-                    # This reduces blockchain RPC load from N workers to 1 (leader only)
-                    if barrier.is_leader:
-                        # Leader queries blockchain and caches to Redis
+                    # Get current block: ONLY hub queries blockchain, all others read from Redis
+                    # This ensures perfect sync across all workers on all nodes
+                    is_hub = redis_aggregator is not None and redis_aggregator.is_hub
+
+                    if is_hub:
+                        # Hub (node-1 worker-0) queries blockchain and caches to Redis
                         current_block = await subtensor.get_current_block()
-                        if redis_aggregator is not None:
-                            redis_aggregator.cache_current_block(current_block)
-                    else:
-                        # Follower: try Redis cache first (saves RPC calls)
-                        current_block = None
-                        if redis_aggregator is not None:
-                            current_block = redis_aggregator.get_cached_block()
+                        redis_aggregator.cache_current_block(current_block)
+                    elif redis_aggregator is not None:
+                        # All other workers: read from Redis (perfect sync)
+                        current_block = redis_aggregator.get_cached_block()
                         if current_block is None:
-                            # Fallback to direct RPC if cache miss (leader not started yet)
+                            # Fallback to RPC only if Redis cache is empty (hub not started yet)
+                            logger.debug("Redis cache miss, falling back to RPC")
                             current_block = await subtensor.get_current_block()
+                    else:
+                        # No Redis configured - use RPC directly (single-node mode)
+                        current_block = await subtensor.get_current_block()
 
                     window_start = self.calculate_window(current_block)
 
@@ -406,12 +409,12 @@ class MinerNeuron(BaseNeuron):
                     # Window is available - reset tracker
                     window_wait_tracker.reset()
 
-                    # Leader signals which window it's working on so followers can sync
+                    # Hub signals window to Redis for cross-node sync
+                    # Local leader signals to file-based barrier for same-node sync
+                    if is_hub:
+                        redis_aggregator.signal_window_start(window_start)
                     if barrier.is_leader:
                         barrier.signal_current_window(window_start)
-                        # Also signal via Redis for cross-node sync
-                        if redis_aggregator is not None:
-                            redis_aggregator.signal_window_start(window_start)
 
                     # Followers: check if leader is downloading a checkpoint BEFORE
                     # we discover/load checkpoints. This ensures all workers sync.
@@ -505,6 +508,17 @@ class MinerNeuron(BaseNeuron):
                                         gpu_mem_util = float(
                                             os.getenv("GRAIL_VLLM_GPU_MEMORY_UTIL", "0.50")
                                         )
+                                        # Stagger vLLM startup to reduce contention
+                                        # Workers start with 0.5-2s delay based on worker_id
+                                        stagger_delay = worker_config.worker_id * 0.25
+                                        if stagger_delay > 0:
+                                            logger.debug(
+                                                "Worker %d: waiting %.1fs before vLLM startup (stagger)",
+                                                worker_config.worker_id,
+                                                stagger_delay,
+                                            )
+                                            await asyncio.sleep(stagger_delay)
+
                                         if vllm_server is None:
                                             # First time - create and start server
                                             vllm_server = _create_vllm_server_manager(
@@ -549,9 +563,34 @@ class MinerNeuron(BaseNeuron):
                                                 )
                                             except Exception as vllm_exc:
                                                 logger.error(
-                                                    "Failed to reload vLLM server: %s",
+                                                    "Failed to reload vLLM server: %s - will recreate",
                                                     vllm_exc,
                                                 )
+                                                # Reload failed - recreate the server from scratch
+                                                try:
+                                                    await vllm_server._stop_server()
+                                                except Exception:
+                                                    pass  # Best effort cleanup
+                                                vllm_server = _create_vllm_server_manager(
+                                                    str(checkpoint_path),
+                                                    worker_config.worker_id,
+                                                    gpu_memory_util=gpu_mem_util,
+                                                )
+                                                if vllm_server is not None:
+                                                    logger.info(
+                                                        "🔄 Recreating vLLM server for worker %d...",
+                                                        worker_config.worker_id,
+                                                    )
+                                                    await vllm_server.start_server()
+                                                    os.environ["GRAIL_VLLM_URL"] = vllm_server.base_url
+                                                    os.environ["GRAIL_VLLM_MODEL_NAME"] = vllm_server.model_name
+                                                    logger.info(
+                                                        "✅ vLLM server recreated at %s",
+                                                        vllm_server.base_url,
+                                                    )
+                                                    self.register_shutdown_callback(
+                                                        vllm_server._stop_server
+                                                    )
                                 except Exception:
                                     logger.exception(
                                         "[miner] FAILED to load checkpoint for window %s from %s. "
@@ -622,6 +661,7 @@ class MinerNeuron(BaseNeuron):
                         checkpoint_window,
                         worker_config,  # Multi-worker support
                         abort_check=abort_check,
+                        redis_aggregator=redis_aggregator,  # For centralized block sync
                     )
 
                     # Prefetch task will be started AFTER upload completes (see below)
