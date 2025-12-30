@@ -484,6 +484,20 @@ class MinerNeuron(BaseNeuron):
                     if barrier.is_leader:
                         barrier.signal_current_window(window_start)
 
+                    # NON-HUB LEADERS: Check Redis for hub's checkpoint to skip discovery.
+                    # Hub broadcasts checkpoint window when it starts downloading.
+                    # Non-hub leaders can use this to skip R2 discovery queries and
+                    # start their own download immediately (parallel with hub).
+                    hub_checkpoint_hint: int | None = None
+                    if barrier.is_leader and redis_aggregator is not None and not is_hub:
+                        redis_ckpt, _ = redis_aggregator.get_redis_checkpoint()
+                        if redis_ckpt is not None and redis_ckpt != current_checkpoint_window:
+                            logger.info(
+                                f"📡 Non-hub leader: Hub has checkpoint {redis_ckpt} "
+                                f"(current={current_checkpoint_window}), using as hint for parallel download"
+                            )
+                            hub_checkpoint_hint = redis_ckpt
+
                     # Followers: check if leader is downloading a checkpoint BEFORE
                     # we discover/load checkpoints. This ensures all workers sync.
                     if not barrier.is_leader:
@@ -532,10 +546,18 @@ class MinerNeuron(BaseNeuron):
                         prefetch_task = None
 
                     # Discover latest ready checkpoint (before current window)
-                    # This allows miners to proceed even if trainer is lagging
-                    checkpoint_window = await checkpoint_manager.get_latest_ready_checkpoint(
-                        window_start
-                    )
+                    # Non-hub leaders can skip R2 discovery if hub already told us which checkpoint
+                    if hub_checkpoint_hint is not None:
+                        checkpoint_window = hub_checkpoint_hint
+                        logger.info(
+                            f"📡 Non-hub leader: Using hub's checkpoint {hub_checkpoint_hint} "
+                            f"(skipped R2 discovery)"
+                        )
+                    else:
+                        # Standard discovery from R2 (hub and single-node mode)
+                        checkpoint_window = await checkpoint_manager.get_latest_ready_checkpoint(
+                            window_start
+                        )
 
                     # Load checkpoint if discovered and different from current
                     if checkpoint_window is not None and checkpoint_window >= 0:
@@ -543,6 +565,17 @@ class MinerNeuron(BaseNeuron):
                             # Leader signals to followers that it's downloading
                             if barrier.is_leader:
                                 barrier.signal_checkpoint_downloading(checkpoint_window)
+
+                            # Hub broadcasts checkpoint to Redis IMMEDIATELY so other nodes
+                            # can skip discovery and start parallel downloads
+                            if is_hub and redis_aggregator is not None:
+                                redis_aggregator.broadcast_checkpoint(
+                                    checkpoint_window, f"downloading-{checkpoint_window}"
+                                )
+                                logger.info(
+                                    f"🌐 Hub: Broadcast checkpoint {checkpoint_window} to Redis "
+                                    f"(other nodes can start parallel download)"
+                                )
 
                             # Time checkpoint download/retrieval
                             timer_ctx = (
