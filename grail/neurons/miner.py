@@ -493,16 +493,25 @@ class MinerNeuron(BaseNeuron):
                     hub_checkpoint_hint: int | None = None
                     if barrier.is_leader and redis_aggregator is not None and not is_hub:
                         # Wait for hub to broadcast checkpoint (with timeout)
+                        # Accept ANY checkpoint from hub (new or same) to skip R2 discovery
                         wait_start = time.monotonic()
                         max_hub_wait = 15.0  # Wait up to 15s for hub's checkpoint broadcast
                         while True:
                             redis_ckpt, _ = redis_aggregator.get_redis_checkpoint()
-                            if redis_ckpt is not None and redis_ckpt != current_checkpoint_window:
+                            # Accept ANY checkpoint from hub (even if same as current)
+                            # This lets non-hub skip R2 discovery once hub has done it
+                            if redis_ckpt is not None:
                                 elapsed = time.monotonic() - wait_start
-                                logger.info(
-                                    f"📡 Non-hub leader: Hub broadcast checkpoint {redis_ckpt} "
-                                    f"(waited {elapsed:.1f}s), using for parallel download"
-                                )
+                                if redis_ckpt != current_checkpoint_window:
+                                    logger.info(
+                                        f"📡 Non-hub leader: Hub broadcast NEW checkpoint {redis_ckpt} "
+                                        f"(waited {elapsed:.1f}s), using for parallel download"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"📡 Non-hub leader: Hub confirms checkpoint {redis_ckpt} unchanged "
+                                        f"(waited {elapsed:.1f}s), skipping R2 discovery"
+                                    )
                                 hub_checkpoint_hint = redis_ckpt
                                 break
                             elapsed = time.monotonic() - wait_start
@@ -753,6 +762,17 @@ class MinerNeuron(BaseNeuron):
                                     "Retaining current model (window=%s)",
                                     checkpoint_window,
                                     current_checkpoint_window,
+                                )
+                        else:
+                            # Checkpoint unchanged - hub should still broadcast so non-hub leaders
+                            # know to skip R2 discovery and proceed
+                            if is_hub and redis_aggregator is not None:
+                                redis_aggregator.broadcast_checkpoint(
+                                    current_checkpoint_window, f"unchanged-{current_checkpoint_window}"
+                                )
+                                logger.info(
+                                    f"🌐 Hub: Checkpoint unchanged ({current_checkpoint_window}), "
+                                    f"broadcast to Redis so non-hub can skip discovery"
                                 )
                     elif model is None or tokenizer is None:
                         logger.error("No checkpoint available and no model loaded, cannot mine")
