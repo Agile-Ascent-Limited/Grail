@@ -619,12 +619,20 @@ async def generate_rollouts_for_window(
     barrier = WorkerBarrier(cache_root, worker_config.worker_id, worker_config.total_workers)
     is_leader = worker_config.worker_id == 0
 
-    # Leader resets counter at start of each window and signals ready
-    # Followers must wait for this before claiming to prevent race condition
-    if is_leader:
+    # Determine who should reset the problem queue counter:
+    # - Multi-node mode: ONLY the hub should reset (global leader across all nodes)
+    # - Single-node mode: The local leader (worker 0) should reset
+    # Previously, all node leaders were resetting, causing duplicate problem indices!
+    is_hub = redis_aggregator is not None and redis_aggregator.is_hub
+    should_reset_counter = is_hub or (redis_aggregator is None and is_leader)
+
+    if should_reset_counter:
         problem_queue.reset_counter(window_start)
+    elif not is_hub and redis_aggregator is not None:
+        # Non-hub nodes wait for hub to reset (even their worker-0)
+        problem_queue.wait_for_leader_reset(window_start, timeout=10.0)
     else:
-        # Followers wait for leader to finish reset (prevents duplicate claims)
+        # Single-node followers wait for leader reset
         problem_queue.wait_for_leader_reset(window_start, timeout=10.0)
 
     # Detect device from model (handles multi-GPU)
