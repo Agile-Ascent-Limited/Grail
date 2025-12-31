@@ -1696,6 +1696,7 @@ Expected:
 | `GRAIL_NODE_ID` | Worker 0 only | Unique node identifier (auto-shared via Redis) | `node-1`, `node-2` |
 | `GRAIL_TOTAL_NODES` | Optional | Number of nodes (default: 4) | `4` |
 | `GRAIL_STOP_BUFFER_{node}` | Hub only | Early stop buffer for slow nodes (blocks) | `GRAIL_STOP_BUFFER_node-2=2` |
+| `GRAIL_HUB_STALL_TIMEOUT` | Optional | Seconds to wait for slow nodes after 90% ready (default: 60) | `60` |
 
 **Note on `GRAIL_NODE_ID`:** You only need to set this on **Worker 0** of each node. Worker 0 stores the node_id in Redis at key `grail:config:node_id`, and Workers 1-7 automatically read it from Redis. This ensures all workers on the same node use a consistent identifier for problem claiming and rollout tracking.
 
