@@ -1368,7 +1368,8 @@ class RedisRolloutAggregator:
         poll_interval = 0.3  # Fast polling for quicker detection
         last_count = 0
         stall_start = None
-        stall_timeout = 10.0  # Exit if no progress for 10s after early threshold
+        # Exit if no progress for N seconds after early threshold (configurable)
+        stall_timeout = float(os.getenv("GRAIL_HUB_STALL_TIMEOUT", "60"))
 
         while True:
             elapsed = time.time() - start_time
