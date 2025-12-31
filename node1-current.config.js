@@ -40,7 +40,7 @@ module.exports = {
         // IMPORTANT: Update these values!
         GRAIL_REDIS_URL: 'redis://64.247.206.73:45296/0',  // <-- CHANGE THIS to hub's IP
         GRAIL_NODE_ID: 'node-2',                   // <-- CHANGE THIS (node-2, node-3, or node-4)
-        GRAIL_TOTAL_NODES: '3',
+        GRAIL_TOTAL_NODES: '2',
         // Note: GRAIL_HUB_MODE is NOT set (this is a worker node)
       },
       max_memory_restart: '80G',

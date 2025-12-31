@@ -1334,15 +1334,32 @@ GRAIL_REDIS_URL=redis://hub-ip:6379/0 grail mine
 
 The A6000 will claim problems from the shared queue and contribute rollouts. While it generates fewer rollouts than A100 (due to smaller batches), every rollout counts toward the superlinear score formula.
 
-**Continuous checkpoint prefetch (recommended for slow nodes):**
+**Continuous checkpoint prefetch (recommended for ALL nodes):**
 
-Slow nodes like A6000 spend significant time downloading checkpoints at the start of each window. By the time the download completes and vLLM loads the model, much of the window is already gone.
+Running a separate prefetch process ensures checkpoints are always pre-cached before miners need them. This is especially impactful for:
+- **Slow nodes (A6000)**: Reduces checkpoint download overhead at window start
+- **Fast nodes (A100)**: Helps reach the 5120+ rollout threshold by eliminating any download delays
+
+In production testing, enabling prefetch on A100 nodes was the difference between missing and exceeding the 5120 rollout minimum threshold.
 
 **Solution:** Run a separate prefetch process that continuously downloads new checkpoints in the background. This runs **without GPU** and ensures checkpoints are always pre-cached.
 
 ```bash
-# Run as a separate PM2 process on the A6000 - no GPU required
+# Run as a separate PM2 process - no GPU required
 GRAIL_PREFETCH_MODE=1 grail mine
+```
+
+**Quick start with prefetch.config.js:**
+
+For a quick setup, use the provided `prefetch.config.js` in the repo root:
+
+```bash
+# Edit prefetch.config.js to set your wallet name and cache path
+nano prefetch.config.js
+
+# Start the prefetch process
+pm2 start prefetch.config.js
+pm2 logs prefetch  # Watch for "✅ Prefetched checkpoint" messages
 ```
 
 This process:
