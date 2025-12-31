@@ -34,6 +34,12 @@ _AGGRESSIVE_PRECISION = _PRECISION_LEVEL == "2"
 # Useful for pre-staging checkpoints on new nodes before joining the cluster
 _DOWNLOAD_ONLY = os.getenv("GRAIL_DOWNLOAD_ONLY", "0").lower() in ("1", "true", "yes")
 
+# Prefetch mode: continuously watch for new checkpoints and pre-download them
+# Runs without GPU - perfect for slow nodes that need checkpoints pre-staged
+# Use: GRAIL_PREFETCH_MODE=1 grail mine
+_PREFETCH_MODE = os.getenv("GRAIL_PREFETCH_MODE", "0").lower() in ("1", "true", "yes")
+_PREFETCH_INTERVAL = int(os.getenv("GRAIL_PREFETCH_INTERVAL", "30"))  # Check every N seconds
+
 if _ENABLE_PRECISION_TUNING:
     # Disable TF32 - uses 19-bit precision instead of 23-bit, causes drift
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -440,6 +446,60 @@ class MinerNeuron(BaseNeuron):
                     logger.error(f"❌ Download-only mode failed: {e}")
                     traceback.print_exc()
                 return  # Exit after download
+
+            # Prefetch mode: continuously watch for and download new checkpoints
+            # Runs without GPU - perfect for slow nodes that need pre-staging
+            # Use: GRAIL_PREFETCH_MODE=1 grail mine
+            if _PREFETCH_MODE:
+                logger.info("🔄 Prefetch mode: continuously watching for new checkpoints...")
+                logger.info(f"🔄 Check interval: {_PREFETCH_INTERVAL}s (set GRAIL_PREFETCH_INTERVAL to change)")
+
+                last_downloaded_window: int | None = None
+
+                while not self.stop_event.is_set():
+                    try:
+                        # Get current block to find latest checkpoint
+                        subtensor = await self.get_subtensor()
+                        current_block = await subtensor.get_current_block()
+                        self.heartbeat()
+
+                        # Discover latest ready checkpoint
+                        checkpoint_window = await checkpoint_manager.get_latest_ready_checkpoint(
+                            current_block
+                        )
+
+                        if checkpoint_window is None:
+                            logger.debug("No checkpoint available yet, waiting...")
+                        elif checkpoint_window == last_downloaded_window:
+                            logger.debug(
+                                f"Checkpoint {checkpoint_window} already downloaded, waiting for new one..."
+                            )
+                        else:
+                            # New checkpoint available - download it
+                            logger.info(
+                                f"📥 New checkpoint detected: {checkpoint_window} (block {current_block})"
+                            )
+
+                            checkpoint_path = await checkpoint_manager.get_checkpoint(checkpoint_window)
+
+                            if checkpoint_path:
+                                logger.info(f"✅ Prefetched checkpoint: {checkpoint_path}")
+                                last_downloaded_window = checkpoint_window
+                            else:
+                                logger.warning(f"⚠️ Failed to download checkpoint {checkpoint_window}")
+
+                        # Wait before checking again
+                        await asyncio.sleep(_PREFETCH_INTERVAL)
+
+                    except asyncio.CancelledError:
+                        logger.info("🔄 Prefetch mode cancelled")
+                        break
+                    except Exception as e:
+                        logger.warning(f"⚠️ Prefetch error (will retry): {e}")
+                        await asyncio.sleep(_PREFETCH_INTERVAL)
+
+                logger.info("🔄 Prefetch mode stopped")
+                return  # Exit - prefetch mode doesn't mine
 
             # Initialize monitoring for mining operations (all workers)
             monitor = get_monitoring_manager()

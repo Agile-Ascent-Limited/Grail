@@ -1328,14 +1328,76 @@ GRAIL_VLLM_SLOW_RELOAD=1           # Wait for GPU memory release between checkpo
 The A6000 can join an existing A100 cluster via Redis coordination:
 
 ```bash
-# On A6000 server - use download-only mode to pre-stage checkpoints
-GRAIL_DOWNLOAD_ONLY=1 grail mine
-
 # Then run normally with Redis pointing to hub
 GRAIL_REDIS_URL=redis://hub-ip:6379/0 grail mine
 ```
 
 The A6000 will claim problems from the shared queue and contribute rollouts. While it generates fewer rollouts than A100 (due to smaller batches), every rollout counts toward the superlinear score formula.
+
+**Continuous checkpoint prefetch (recommended for slow nodes):**
+
+Slow nodes like A6000 spend significant time downloading checkpoints at the start of each window. By the time the download completes and vLLM loads the model, much of the window is already gone.
+
+**Solution:** Run a separate prefetch process that continuously downloads new checkpoints in the background. This runs **without GPU** and ensures checkpoints are always pre-cached.
+
+```bash
+# Run as a separate PM2 process on the A6000 - no GPU required
+GRAIL_PREFETCH_MODE=1 grail mine
+```
+
+This process:
+- Watches for new trainer checkpoints every 30 seconds (configurable via `GRAIL_PREFETCH_INTERVAL`)
+- Downloads them to the cache before the miner needs them
+- Runs indefinitely without using GPU memory
+- When your actual miner starts a new window, the checkpoint is already cached
+
+**PM2 ecosystem for A6000 with prefetch:**
+
+```javascript
+// ecosystem.config.js for A6000 with 2 GPUs
+module.exports = {
+  apps: [
+    // Checkpoint prefetcher - runs without GPU
+    {
+      name: "prefetch",
+      script: "grail",
+      args: "mine",
+      env: {
+        GRAIL_PREFETCH_MODE: "1",
+        GRAIL_PREFETCH_INTERVAL: "30",
+        // wallet config...
+      }
+    },
+    // Actual miners - use the GPUs
+    {
+      name: "miner-0",
+      script: "grail",
+      args: "mine",
+      env: {
+        CUDA_VISIBLE_DEVICES: "0",
+        GRAIL_WORKER_ID: "0",
+        GRAIL_TOTAL_WORKERS: "2",
+        GRAIL_REDIS_URL: "redis://hub-ip:6379/0",
+        GRAIL_VLLM_SLOW_RELOAD: "1",
+        // ... other A6000 settings
+      }
+    },
+    {
+      name: "miner-1",
+      script: "grail",
+      args: "mine",
+      env: {
+        CUDA_VISIBLE_DEVICES: "1",
+        GRAIL_WORKER_ID: "1",
+        GRAIL_TOTAL_WORKERS: "2",
+        GRAIL_REDIS_URL: "redis://hub-ip:6379/0",
+        GRAIL_VLLM_SLOW_RELOAD: "1",
+        // ... other A6000 settings
+      }
+    }
+  ]
+};
+```
 
 **Per-node stop buffer (for slow nodes):**
 
@@ -1698,6 +1760,8 @@ Expected:
 | `GRAIL_STOP_BUFFER_{node}` | Hub only | Early stop buffer for slow nodes (blocks) | `GRAIL_STOP_BUFFER_node-2=2` |
 | `GRAIL_HUB_STALL_TIMEOUT` | Optional | Seconds to wait for slow nodes after 90% ready (default: 60) | `60` |
 | `GRAIL_CLAIM_TIMEOUT` | Optional | Seconds before hub recycles stale claims (default: 30) | `30` |
+| `GRAIL_PREFETCH_MODE` | Optional | Run in checkpoint prefetch mode (no GPU, continuous download) | `1` |
+| `GRAIL_PREFETCH_INTERVAL` | Optional | Seconds between prefetch checks (default: 30) | `30` |
 
 **Note on `GRAIL_NODE_ID`:** You only need to set this on **Worker 0** of each node. Worker 0 stores the node_id in Redis at key `grail:config:node_id`, and Workers 1-7 automatically read it from Redis. This ensures all workers on the same node use a consistent identifier for problem claiming and rollout tracking.
 
