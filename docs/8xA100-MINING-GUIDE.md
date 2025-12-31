@@ -1353,50 +1353,107 @@ This process:
 
 **PM2 ecosystem for A6000 with prefetch:**
 
+> **Important:** PM2 tries to run scripts as Node.js modules by default. For Python CLI tools like `grail`, use a bash wrapper with `interpreter: "none"` or call Python directly.
+
 ```javascript
 // ecosystem.config.js for A6000 with 2 GPUs
+// Using bash wrapper approach (recommended)
 module.exports = {
   apps: [
-    // Checkpoint prefetcher - runs without GPU
+    // Checkpoint prefetcher - runs without GPU, continuously downloads checkpoints
     {
       name: "prefetch",
-      script: "grail",
-      args: "mine",
+      script: "bash",
+      args: "-c 'source /path/to/grail/.venv/bin/activate && grail mine'",
+      interpreter: "none",
+      cwd: "/path/to/grail",
       env: {
         GRAIL_PREFETCH_MODE: "1",
         GRAIL_PREFETCH_INTERVAL: "30",
-        // wallet config...
+        // Wallet config (required)
+        WALLET_NAME: "your-wallet",
+        WALLET_HOTKEY: "your-hotkey",
+        // Subtensor (required)
+        SUBTENSOR_NETWORK: "finney",
+        // Cache path (optional, defaults to ~/.cache/grail)
+        GRAIL_CHECKPOINT_CACHE_ROOT: "/ephemeral/grail/checkpoints"
       }
     },
     // Actual miners - use the GPUs
     {
       name: "miner-0",
-      script: "grail",
-      args: "mine",
+      script: "bash",
+      args: "-c 'source /path/to/grail/.venv/bin/activate && grail mine'",
+      interpreter: "none",
+      cwd: "/path/to/grail",
       env: {
         CUDA_VISIBLE_DEVICES: "0",
         GRAIL_WORKER_ID: "0",
         GRAIL_TOTAL_WORKERS: "2",
         GRAIL_REDIS_URL: "redis://hub-ip:6379/0",
         GRAIL_VLLM_SLOW_RELOAD: "1",
-        // ... other A6000 settings
+        GRAIL_VLLM_GPU_MEMORY_UTIL: "0.55",
+        GRAIL_GENERATION_BATCH_SIZE: "8",
+        GRAIL_VLLM_MAX_NUM_SEQS: "16",
+        WALLET_NAME: "your-wallet",
+        WALLET_HOTKEY: "your-hotkey",
+        SUBTENSOR_NETWORK: "finney",
+        GRAIL_CHECKPOINT_CACHE_ROOT: "/ephemeral/grail/checkpoints"
       }
     },
     {
       name: "miner-1",
-      script: "grail",
-      args: "mine",
+      script: "bash",
+      args: "-c 'source /path/to/grail/.venv/bin/activate && grail mine'",
+      interpreter: "none",
+      cwd: "/path/to/grail",
       env: {
         CUDA_VISIBLE_DEVICES: "1",
         GRAIL_WORKER_ID: "1",
         GRAIL_TOTAL_WORKERS: "2",
         GRAIL_REDIS_URL: "redis://hub-ip:6379/0",
         GRAIL_VLLM_SLOW_RELOAD: "1",
-        // ... other A6000 settings
+        GRAIL_VLLM_GPU_MEMORY_UTIL: "0.55",
+        GRAIL_GENERATION_BATCH_SIZE: "8",
+        GRAIL_VLLM_MAX_NUM_SEQS: "16",
+        WALLET_NAME: "your-wallet",
+        WALLET_HOTKEY: "your-hotkey",
+        SUBTENSOR_NETWORK: "finney",
+        GRAIL_CHECKPOINT_CACHE_ROOT: "/ephemeral/grail/checkpoints"
       }
     }
   ]
 };
+```
+
+**Alternative: Call Python directly (no bash wrapper)**
+
+```javascript
+// If you prefer not to use bash wrapper
+{
+  name: "prefetch",
+  script: "/path/to/grail/.venv/bin/python",
+  args: "-m grail.cli mine",
+  cwd: "/path/to/grail",
+  env: {
+    GRAIL_PREFETCH_MODE: "1",
+    // ... rest of env vars
+  }
+}
+```
+
+**Start the prefetch first, then miners:**
+
+```bash
+# Start prefetch and wait for first checkpoint to download
+pm2 start ecosystem.config.js --only prefetch
+pm2 logs prefetch  # Watch for "✅ Prefetched checkpoint" message
+
+# Once first checkpoint is cached, start miners
+pm2 start ecosystem.config.js --only miner-0 --only miner-1
+
+# Or start everything at once (miners will wait for checkpoint)
+pm2 start ecosystem.config.js
 ```
 
 **Per-node stop buffer (for slow nodes):**
