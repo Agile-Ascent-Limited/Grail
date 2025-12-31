@@ -665,6 +665,14 @@ async def generate_rollouts_for_window(
             # Return empty - rollouts with old checkpoint would be filtered anyway
             return []
 
+        # HUB ONLY: Recycle stale claims (claimed but not completed within timeout)
+        # This allows stuck/crashed worker problems to be re-claimed by other workers
+        # Only check every 3 iterations to reduce Redis overhead
+        if is_hub and inference_count % 3 == 0:
+            recycled = problem_queue.recycle_stale_claims(window_start)
+            if recycled > 0:
+                logger.info("♻️ Hub recycled %d stale claims for window %d", recycled, window_start)
+
         # Atomically claim next problem from shared queue (gap-free distribution)
         # This replaces round-robin and ensures contiguous problem indices
         problem_index = problem_queue.claim_next_problem(window_start)
@@ -924,6 +932,9 @@ async def generate_rollouts_for_window(
                             break  # Exit generation loop, push what we have
                 # Skip packaging this group entirely; continue to next problem
                 timers.update_gen_time_ema(time.time() - gen_start)
+                # Mark problem as completed even though rollouts were dropped
+                # This prevents the hub from recycling it (worker did attempt it)
+                problem_queue.mark_completed(window_start, problem_index)
                 continue
 
             # Package each rollout with signatures and proofs for validation
@@ -956,6 +967,8 @@ async def generate_rollouts_for_window(
                         await monitor.log_counter("mining/failed_rollouts")
 
             timers.update_gen_time_ema(time.time() - gen_start)
+            # Mark problem as completed so hub doesn't recycle it
+            problem_queue.mark_completed(window_start, problem_index)
             await asyncio.sleep(0.01)
 
         except RuntimeError as e:

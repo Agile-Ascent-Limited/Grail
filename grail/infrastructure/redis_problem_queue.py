@@ -30,6 +30,10 @@ REDIS_PREFIX = "grail:problems"
 # Should be longer than a window (~6 minutes) but not too long
 CLAIM_TTL = 600  # 10 minutes
 
+# Timeout for claim recycling - if a problem is claimed but not completed
+# within this time, the hub can recycle it for another worker to claim
+CLAIM_TIMEOUT_SECONDS = float(os.getenv("GRAIL_CLAIM_TIMEOUT", "30"))
+
 # Shared node ID key PREFIX - actual key is per-hostname to prevent cross-node collision
 # Each physical node uses: grail:config:node_id:{hostname}
 REDIS_NODE_ID_KEY_PREFIX = "grail:config:node_id"
@@ -69,6 +73,14 @@ class ProblemQueueProtocol(Protocol):
 
     def wait_for_leader_reset(self, window: int, timeout: float = 10.0) -> bool:
         """Wait for leader to reset (for compatibility)."""
+        ...
+
+    def mark_completed(self, window: int, problem_index: int) -> None:
+        """Mark a problem as completed (worker finished generating rollouts)."""
+        ...
+
+    def recycle_stale_claims(self, window: int, timeout: float | None = None) -> int:
+        """Hub-only: Find stale claims and recycle them. Returns count recycled."""
         ...
 
 
@@ -231,12 +243,20 @@ class RedisProblemQueue:
         """Get Redis key for problem claim (for tracking/debugging)."""
         return f"{REDIS_PREFIX}:{window}:claim:{problem_index}"
 
+    def _complete_key(self, window: int, problem_index: int) -> str:
+        """Get Redis key for problem completion marker."""
+        return f"{REDIS_PREFIX}:{window}:complete:{problem_index}"
+
+    def _recycle_queue_key(self, window: int) -> str:
+        """Get Redis key for recycle queue (list of problem indices to re-claim)."""
+        return f"{REDIS_PREFIX}:{window}:recycle"
+
     def claim_next_problem(self, window: int, max_attempts: int = MAX_PROBLEMS_PER_WINDOW) -> int:
         """
         Atomically claim the next problem index.
 
-        Uses Redis INCR which is atomic across all clients.
-        Returns the claimed index (0-based).
+        First checks the recycle queue for timed-out problems that can be re-claimed.
+        If no recycled problems available, uses Redis INCR for a new index.
 
         Args:
             window: Window start block number
@@ -246,6 +266,28 @@ class RedisProblemQueue:
             The claimed problem index, or -1 on error
         """
         try:
+            # First, try to claim from recycle queue (timed-out problems)
+            recycle_key = self._recycle_queue_key(window)
+            recycled = self.client.lpop(recycle_key)
+            if recycled is not None:
+                problem_index = int(recycled)
+                # Record the re-claim
+                claim_key = self._claim_key(window, problem_index)
+                self.client.setex(
+                    claim_key,
+                    CLAIM_TTL,
+                    f"{self.server_id}:worker{self.worker_id}:{time.time()}:recycled"
+                )
+                logger.info(
+                    "Worker %d@%s re-claimed recycled problem %d for window %d",
+                    self.worker_id,
+                    self.server_id,
+                    problem_index,
+                    window,
+                )
+                return problem_index
+
+            # No recycled problems, claim a new one
             counter_key = self._counter_key(window)
 
             # INCR returns the new value after increment
@@ -358,6 +400,126 @@ class RedisProblemQueue:
             return int(value) if value else 0
         except Exception:
             return 0
+
+    def mark_completed(self, window: int, problem_index: int) -> None:
+        """
+        Mark a problem as completed (worker finished generating rollouts).
+
+        This is used by the hub to detect stale claims (claimed but not completed).
+
+        Args:
+            window: Window start block number
+            problem_index: The problem index that was completed
+        """
+        try:
+            complete_key = self._complete_key(window, problem_index)
+            self.client.setex(
+                complete_key,
+                CLAIM_TTL,
+                f"{self.server_id}:worker{self.worker_id}:{time.time()}"
+            )
+            logger.debug(
+                "Worker %d@%s marked problem %d complete for window %d",
+                self.worker_id,
+                self.server_id,
+                problem_index,
+                window,
+            )
+        except Exception as e:
+            logger.warning("Redis mark_completed failed: %s", e)
+
+    def recycle_stale_claims(self, window: int, timeout: float | None = None) -> int:
+        """
+        Hub-only: Find stale claims (claimed but not completed) and recycle them.
+
+        Scans all claim keys for this window, checks if they have a corresponding
+        completion key, and if not and the claim is older than timeout, adds the
+        problem index to the recycle queue.
+
+        Args:
+            window: Window start block number
+            timeout: Seconds before a claim is considered stale (default: CLAIM_TIMEOUT_SECONDS)
+
+        Returns:
+            Number of problems recycled
+        """
+        if timeout is None:
+            timeout = CLAIM_TIMEOUT_SECONDS
+
+        recycled_count = 0
+        now = time.time()
+
+        try:
+            # Scan for all claim keys
+            claim_pattern = f"{REDIS_PREFIX}:{window}:claim:*"
+            cursor = 0
+
+            while True:
+                cursor, keys = self.client.scan(cursor, match=claim_pattern, count=100)
+
+                for claim_key in keys:
+                    # Extract problem index from key
+                    try:
+                        problem_index = int(claim_key.split(":")[-1])
+                    except ValueError:
+                        continue
+
+                    # Check if already completed
+                    complete_key = self._complete_key(window, problem_index)
+                    if self.client.exists(complete_key):
+                        continue  # Already completed, skip
+
+                    # Check claim age
+                    claim_value = self.client.get(claim_key)
+                    if not claim_value:
+                        continue
+
+                    # Parse timestamp from claim value (format: "server:workerN:timestamp[:recycled]")
+                    parts = claim_value.split(":")
+                    if len(parts) < 3:
+                        continue
+
+                    try:
+                        claim_time = float(parts[2])
+                    except ValueError:
+                        continue
+
+                    claim_age = now - claim_time
+                    if claim_age > timeout:
+                        # Stale claim - add to recycle queue
+                        recycle_key = self._recycle_queue_key(window)
+                        # Use RPUSH to add to end of queue (FIFO)
+                        self.client.rpush(recycle_key, str(problem_index))
+                        self.client.expire(recycle_key, CLAIM_TTL)
+
+                        # Delete the stale claim to prevent re-recycling
+                        self.client.delete(claim_key)
+
+                        recycled_count += 1
+                        logger.info(
+                            "🔄 Hub recycled stale problem %d for window %d "
+                            "(claimed %.1fs ago by %s, not completed)",
+                            problem_index,
+                            window,
+                            claim_age,
+                            ":".join(parts[:2]),
+                        )
+
+                if cursor == 0:
+                    break
+
+            if recycled_count > 0:
+                logger.info(
+                    "🔄 Hub recycled %d stale claims for window %d (timeout=%.0fs)",
+                    recycled_count,
+                    window,
+                    timeout,
+                )
+
+        except Exception as e:
+            logger.warning("Redis recycle_stale_claims failed: %s", e)
+
+        return recycled_count
 
     def cleanup_window(self, window: int) -> None:
         """Clean up Redis keys for a completed window."""
