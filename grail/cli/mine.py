@@ -938,6 +938,7 @@ async def generate_rollouts_for_window(
                 continue
 
             # Package each rollout with signatures and proofs for validation
+            problem_rollouts = []  # Collect rollouts for this problem for incremental push
             for rollout_idx, rollout in enumerate(grpo_rollouts):
                 rollout_data = package_rollout_data(
                     model,
@@ -954,6 +955,7 @@ async def generate_rollouts_for_window(
                     checkpoint_window,
                 )
                 inferences.append(rollout_data)
+                problem_rollouts.append(rollout_data)
 
                 if rollout.success:
                     successful_rollouts += 1
@@ -967,6 +969,12 @@ async def generate_rollouts_for_window(
                         await monitor.log_counter("mining/failed_rollouts")
 
             timers.update_gen_time_ema(time.time() - gen_start)
+
+            # Push this problem's rollouts to Redis immediately (incremental push)
+            # This ensures completed problems are preserved even if worker crashes later
+            if redis_aggregator is not None and problem_rollouts:
+                redis_aggregator.push_problem_rollouts(window_start, problem_index, problem_rollouts)
+
             # Mark problem as completed so hub doesn't recycle it
             problem_queue.mark_completed(window_start, problem_index)
             await asyncio.sleep(0.01)

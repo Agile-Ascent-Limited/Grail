@@ -1287,6 +1287,60 @@ class RedisRolloutAggregator:
         """Get Redis key for list of workers that pushed."""
         return f"{REDIS_ROLLOUT_PREFIX}:{window}:workers"
 
+    def _incremental_key(self, window: int, worker_key: str) -> str:
+        """Get Redis key for incremental rollout pushes (list)."""
+        return f"{REDIS_ROLLOUT_PREFIX}:{window}:incremental:{worker_key}"
+
+    def push_problem_rollouts(
+        self, window: int, problem_index: int, rollouts: list[dict]
+    ) -> bool:
+        """
+        Push rollouts for a single problem immediately after generation.
+
+        Uses RPUSH to append to a Redis list, allowing incremental pushes
+        without waiting for the full window to complete. If the worker crashes,
+        already-pushed problems are preserved in Redis.
+
+        Args:
+            window: Window number
+            problem_index: The problem index these rollouts are for
+            rollouts: Rollouts for this specific problem
+
+        Returns:
+            True if successfully pushed
+        """
+        if not rollouts:
+            return True  # Nothing to push
+
+        try:
+            # Serialize this problem's rollouts
+            data = json.dumps({
+                "problem_index": problem_index,
+                "rollout_count": len(rollouts),
+                "rollouts": rollouts,
+                "timestamp": time.time(),
+            })
+
+            # Append to worker's incremental list
+            incremental_key = self._incremental_key(window, self.worker_key)
+            self.client.rpush(incremental_key, data)
+            self.client.expire(incremental_key, REDIS_ROLLOUT_TTL)
+
+            # Register this worker (if not already)
+            workers_key = self._workers_list_key(window)
+            self.client.sadd(workers_key, self.worker_key)
+            self.client.expire(workers_key, REDIS_ROLLOUT_TTL)
+
+            logger.debug(
+                "Worker %s pushed %d rollouts for problem %d (window %d)",
+                self.worker_key, len(rollouts), problem_index, window,
+            )
+            return True
+
+        except Exception as e:
+            logger.warning("Failed to push problem %d rollouts to Redis: %s", problem_index, e)
+            return False
+
     def push_rollouts(self, window: int, rollouts: list[dict]) -> bool:
         """
         Push this worker's rollouts to Redis.
@@ -1428,6 +1482,10 @@ class RedisRolloutAggregator:
         """
         Hub aggregates rollouts from all workers.
 
+        Collects from both:
+        - Batch pushes (legacy): single blob per worker via push_rollouts()
+        - Incremental pushes: list of per-problem pushes via push_problem_rollouts()
+
         Returns:
             Combined list of rollouts from all workers, sorted by problem_index
         """
@@ -1445,7 +1503,35 @@ class RedisRolloutAggregator:
                 return []
 
             all_rollouts = []
+            incremental_count = 0
+            batch_count = 0
+
             for worker_key in worker_keys:
+                # First, collect from incremental list (new approach)
+                incremental_key = self._incremental_key(window, worker_key)
+                incremental_data = self.client.lrange(incremental_key, 0, -1)
+
+                if incremental_data:
+                    worker_incremental = 0
+                    for item in incremental_data:
+                        try:
+                            parsed = json.loads(item)
+                            problem_rollouts = parsed.get("rollouts", [])
+                            all_rollouts.extend(problem_rollouts)
+                            worker_incremental += len(problem_rollouts)
+                        except json.JSONDecodeError as e:
+                            logger.warning(
+                                "Failed to parse incremental rollout from worker %s: %s",
+                                worker_key, e,
+                            )
+                    if worker_incremental > 0:
+                        incremental_count += worker_incremental
+                        logger.debug(
+                            "Hub collected %d incremental rollouts from worker %s",
+                            worker_incremental, worker_key,
+                        )
+
+                # Also collect from batch push (legacy/fallback)
                 rollouts_key = self._rollouts_key(window, worker_key)
                 data = self.client.get(rollouts_key)
 
@@ -1454,12 +1540,19 @@ class RedisRolloutAggregator:
                         parsed = json.loads(data)
                         worker_rollouts = parsed.get("rollouts", [])
                         all_rollouts.extend(worker_rollouts)
+                        batch_count += len(worker_rollouts)
                         logger.debug(
-                            "Hub aggregated %d rollouts from worker %s",
+                            "Hub aggregated %d batch rollouts from worker %s",
                             len(worker_rollouts), worker_key,
                         )
                     except json.JSONDecodeError as e:
                         logger.warning("Failed to parse rollouts from worker %s: %s", worker_key, e)
+
+            if incremental_count > 0 or batch_count > 0:
+                logger.info(
+                    "Hub collected rollouts: %d incremental + %d batch = %d total",
+                    incremental_count, batch_count, incremental_count + batch_count,
+                )
 
             # Deduplicate by (rollout_group, rollout_index)
             if all_rollouts:
@@ -1524,11 +1617,12 @@ class RedisRolloutAggregator:
             workers_key = self._workers_list_key(window)
             worker_keys = self.client.smembers(workers_key)
 
-            # Delete all keys for this window
+            # Delete all keys for this window (including incremental lists)
             keys_to_delete = [workers_key]
             for worker_key in worker_keys:
                 keys_to_delete.append(self._rollouts_key(window, worker_key))
                 keys_to_delete.append(self._ready_key(window, worker_key))
+                keys_to_delete.append(self._incremental_key(window, worker_key))
 
             if keys_to_delete:
                 self.client.delete(*keys_to_delete)
