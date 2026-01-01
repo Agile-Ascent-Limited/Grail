@@ -884,16 +884,24 @@ If you see logs like:
 ⚠️ GAP at problem 129: Truncated 320 rollouts
 ```
 
-**Note:** With the current shared problem queue, this should be **very rare**. The queue ensures problems are claimed sequentially (0, 1, 2, 3...) so gaps only occur if:
-- A worker crashes mid-generation (problem claimed but not completed)
+**Note:** With the current shared problem queue and **incremental rollout pushing**, this should be **very rare**. The system has two layers of protection:
+
+1. **Incremental Pushing**: Each problem's rollouts are pushed to Redis immediately after generation (you'll see `📤 Worker ... pushed X rollouts for problem Y` logs). If a worker crashes or early-exits, already-completed problems are preserved in Redis.
+
+2. **Sequential Claiming**: The queue ensures problems are claimed sequentially (0, 1, 2, 3...) so gaps only occur if a problem is claimed but never completed.
+
+**Gaps now only occur if:**
+- A worker crashes mid-generation of a specific problem (before the incremental push)
+- Redis connectivity issues during push
 - Filesystem issues with the counter file in `~/.cache/grail/.problem-queue/`
 
 **Why it matters:** The validator requires contiguous problem indices. A gap at problem 129 means all rollouts for problems 130+ would fail validation anyway, so they're discarded.
 
 **If you see frequent gaps:**
 1. Check for worker crashes in PM2: `pm2 logs | grep -E "error|crash"`
-2. Verify the problem queue directory exists: `ls -la ~/.cache/grail/.problem-queue/`
-3. Check for stale lock files: `ls -la ~/.cache/grail/.problem-queue/*.lock`
+2. Verify incremental pushes are happening: `pm2 logs | grep "📤 Worker"`
+3. Check Redis connectivity: `redis-cli -h HUB_IP ping`
+4. Verify the problem queue directory exists: `ls -la ~/.cache/grail/.problem-queue/`
 
 **8. Duplicate Nonce Error with Batch Size > 10 (Formula Collision)**
 
@@ -974,36 +982,34 @@ In multi-worker setups, all workers generate rollouts but only **worker 0 (leade
 
 ### How It Works
 
-1. Each worker generates rollouts and stages them locally
-2. Worker 0 waits for all workers to complete staging
-3. Worker 0 aggregates all rollouts into a single file
-4. Worker 0 uploads the combined file to R2
+1. **Incremental Push**: Each worker pushes rollouts to Redis immediately after each problem completes (you'll see `📤 Worker ... pushed` logs)
+2. **Hub Aggregation**: When hub finishes generation, it collects all rollouts from Redis (no waiting/timeouts)
+3. **Upload**: Hub uploads the combined file to R2
+
+Since rollouts are pushed incrementally, they're already in Redis when aggregation happens. No waiting for workers means no timeout-related gaps.
 
 ### Verifying Aggregation
 
 Check the logs to verify aggregation is working:
 
 ```bash
-# See all staging activity
-pm2 logs | grep -E "(staged|aggregated|Leader:)"
+# See incremental pushes (real-time, per problem)
+pm2 logs | grep "📤 Worker"
 
-# Check worker 0's logs for aggregation
-tail -f /var/log/grail/worker-0-out.log | grep -E "(aggregated|staged)"
+# See aggregation summary
+pm2 logs | grep "Hub collected"
 ```
 
 **Expected log output:**
 ```
-Worker 0 staged 175 rollouts for window 7149180
-Worker 1 staged 172 rollouts for window 7149180
-Worker 2 staged 168 rollouts for window 7149180
+📤 Worker node-1:worker0 pushed 16 rollouts for problem 0 (window 7149180)
+📤 Worker node-1:worker0 pushed 16 rollouts for problem 4 (window 7149180)
+📤 Worker node-1:worker1 pushed 16 rollouts for problem 1 (window 7149180)
 ...
-Worker 7 staged 180 rollouts for window 7149180
-Leader: 7/7 workers completed staging for window 7149180 (waited 2.5s)
-Leader aggregated 1392 total rollouts from 8 workers for window 7149180
-Successfully uploaded window 7149180 with 1392 aggregated rollouts
+Hub collected 150 rollouts from worker node-1:worker0
+Hub collected 148 rollouts from worker node-1:worker1
+Hub collected 1200 total rollouts from 8 workers for window 7149180
 ```
-
-The total rollout count (1392 in this example) should be approximately 8x what each individual worker staged.
 
 ### First Window Performance
 
@@ -1133,26 +1139,27 @@ Leader aggregated 1152 total rollouts from 8 workers for window 7155540 (sorted 
 Leader aggregated 944 total rollouts from 8 workers for window 7155540 (sorted by problem_index)
 ```
 
-**Duplicate detection (safety net):**
+**Duplicate detection (expected with incremental pushing):**
 ```
-⚠️ DUPLICATES DETECTED: Removed 16 duplicate rollouts (kept 1136 unique)
+Hub: removed 1200 duplicate rollouts from aggregation
 ```
-This indicates a race condition was caught. The duplicates are removed to prevent "duplicate nonce" validation errors. Under normal operation with the atomic file claiming, this should not trigger.
+This is **expected behavior** with incremental pushing enabled. Each problem's rollouts are pushed twice: once incrementally (immediately after generation) and once in the batch push (at window end). The deduplication removes the overlap, keeping one copy of each rollout.
 
 The truncated rollouts would have failed validation anyway, so it's better to upload fewer valid rollouts than more invalid ones.
 
 ### Why Gaps Are Eliminated
 
-With the shared problem queue, gaps are effectively eliminated because:
+With the shared problem queue and incremental pushing, gaps are effectively eliminated because:
 
 1. **Sequential claiming**: Problems are claimed in order (0, 1, 2, 3...) regardless of which worker claims them
-2. **No pre-assignment**: Workers don't have "assigned" problems that might not get completed
-3. **Work stealing**: Faster workers claim more problems, but the sequence is always contiguous
+2. **Incremental pushing**: Each problem's rollouts are pushed to Redis immediately after completion - if a worker crashes or early-exits, already-completed problems are preserved
+3. **No pre-assignment**: Workers don't have "assigned" problems that might not get completed
+4. **Work stealing**: Faster workers claim more problems, but the sequence is always contiguous
 
 **When gaps might still occur:**
-- Worker crashes mid-generation (problem claimed but never completed)
+- Worker crashes mid-generation of a specific problem (before incremental push completes)
+- Redis connectivity issues during push
 - Filesystem issues with the counter file
-- External interruption during a window
 
 In these rare cases, the truncation fallback kicks in. But under normal operation, you should see "✅ No gaps" in every window.
 

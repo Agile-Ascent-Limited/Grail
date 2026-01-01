@@ -991,22 +991,12 @@ class MinerNeuron(BaseNeuron):
                     if inferences:
                         # Choose aggregation mode: Redis (preferred) or file-based (fallback)
                         if redis_aggregator is not None:
-                            # REDIS MODE: Each worker pushes directly to Redis
-                            # No file staging needed - Redis handles everything
-                            logger.info(
-                                f"🌐 Worker {redis_aggregator.worker_key} pushing {len(inferences)} rollouts to Redis..."
-                            )
-                            redis_aggregator.push_rollouts(window_start, inferences)
+                            # REDIS MODE: Rollouts already pushed incrementally during generation
+                            # Just signal we're done so hub knows to aggregate
+                            redis_aggregator.signal_done(window_start)
 
                             if redis_aggregator.is_hub:
-                                # Hub: wait for all workers and aggregate
-                                expected_workers = redis_aggregator.total_nodes * redis_aggregator.total_workers
-                                logger.info(
-                                    f"🌐 Hub waiting for {expected_workers} workers..."
-                                )
-                                await redis_aggregator.wait_for_workers(
-                                    window_start, timeout=60.0
-                                )
+                                # Hub: aggregate from Redis (rollouts already pushed incrementally)
                                 all_inferences = redis_aggregator.aggregate_from_workers(window_start)
                                 logger.info(
                                     f"🌐 Hub aggregated {len(all_inferences)} rollouts from all workers"
@@ -1083,11 +1073,11 @@ class MinerNeuron(BaseNeuron):
                                         if monitor:
                                             await monitor.log_counter("mining/failed_uploads")
                             else:
-                                # Non-hub worker: just pushed to Redis, done
+                                # Non-hub worker: rollouts pushed incrementally, signaled done
                                 ts = datetime.now().strftime("%H:%M:%S")
                                 logger.info(
                                     f"[SUMMARY] {redis_aggregator.worker_key} | window={window_start} | "
-                                    f"rollouts={len(inferences)} | PUSHED | {ts}"
+                                    f"rollouts={len(inferences)} | DONE | {ts}"
                                 )
 
                         elif rollout_staging is not None:

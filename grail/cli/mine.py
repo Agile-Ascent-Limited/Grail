@@ -932,9 +932,12 @@ async def generate_rollouts_for_window(
                             break  # Exit generation loop, push what we have
                 # Skip packaging this group entirely; continue to next problem
                 timers.update_gen_time_ema(time.time() - gen_start)
-                # Mark problem as completed even though rollouts were dropped
-                # This prevents the hub from recycling it (worker did attempt it)
-                problem_queue.mark_completed(window_start, problem_index)
+                # Do NOT mark complete - let another worker retry this problem
+                # If we mark complete with no rollouts, it creates a gap
+                logger.warning(
+                    "Problem %d dropped (all short) - NOT marking complete, will be recycled",
+                    problem_index,
+                )
                 continue
 
             # Package each rollout with signatures and proofs for validation

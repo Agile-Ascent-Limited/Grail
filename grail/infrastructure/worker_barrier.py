@@ -1061,13 +1061,16 @@ class RedisRolloutAggregator:
         GRAIL_TOTAL_WORKERS - Workers per node (default: 8)
 
     Usage:
-        # Each worker pushes its own rollouts:
+        # Each worker pushes rollouts incrementally after each problem:
         aggregator = RedisRolloutAggregator(redis_url, node_id, worker_id, is_hub=False)
-        aggregator.push_rollouts(window, rollouts)
+        aggregator.push_problem_rollouts(window, problem_index, rollouts)
+        # ... after all problems ...
+        aggregator.signal_done(window)
 
         # Hub (worker 0) aggregates from all:
         aggregator = RedisRolloutAggregator(redis_url, node_id, worker_id=0, is_hub=True)
-        all_rollouts = aggregator.aggregate_from_all(window)
+        await aggregator.wait_for_workers(window)
+        all_rollouts = aggregator.aggregate_from_workers(window)
         await upload_window(wallet, window, all_rollouts)
     """
 
@@ -1341,6 +1344,39 @@ class RedisRolloutAggregator:
             logger.warning("Failed to push problem %d rollouts to Redis: %s", problem_index, e)
             return False
 
+    def signal_done(self, window: int) -> bool:
+        """
+        Signal that this worker has finished generating for this window.
+
+        Sets the ready marker so the hub knows we're done. This is called
+        after all incremental pushes are complete.
+
+        Args:
+            window: Window number
+
+        Returns:
+            True if successfully signaled
+        """
+        try:
+            # Set ready marker
+            ready_key = self._ready_key(window, self.worker_key)
+            self.client.setex(ready_key, REDIS_ROLLOUT_TTL, str(time.time()))
+
+            # Ensure worker is registered (should already be from incremental pushes)
+            workers_key = self._workers_list_key(window)
+            self.client.sadd(workers_key, self.worker_key)
+            self.client.expire(workers_key, REDIS_ROLLOUT_TTL)
+
+            logger.info(
+                "✅ Worker %s signaled done for window %d",
+                self.worker_key, window,
+            )
+            return True
+
+        except Exception as e:
+            logger.warning("Failed to signal done for window %d: %s", window, e)
+            return False
+
     def push_rollouts(self, window: int, rollouts: list[dict]) -> bool:
         """
         Push this worker's rollouts to Redis.
@@ -1482,9 +1518,8 @@ class RedisRolloutAggregator:
         """
         Hub aggregates rollouts from all workers.
 
-        Collects from both:
-        - Batch pushes (legacy): single blob per worker via push_rollouts()
-        - Incremental pushes: list of per-problem pushes via push_problem_rollouts()
+        Collects from incremental pushes (per-problem pushes via push_problem_rollouts()).
+        Each worker pushes rollouts immediately after generating each problem.
 
         Returns:
             Combined list of rollouts from all workers, sorted by problem_index
@@ -1503,56 +1538,37 @@ class RedisRolloutAggregator:
                 return []
 
             all_rollouts = []
-            incremental_count = 0
-            batch_count = 0
+            total_count = 0
 
             for worker_key in worker_keys:
-                # First, collect from incremental list (new approach)
+                # Collect from incremental list
                 incremental_key = self._incremental_key(window, worker_key)
                 incremental_data = self.client.lrange(incremental_key, 0, -1)
 
                 if incremental_data:
-                    worker_incremental = 0
+                    worker_count = 0
                     for item in incremental_data:
                         try:
                             parsed = json.loads(item)
                             problem_rollouts = parsed.get("rollouts", [])
                             all_rollouts.extend(problem_rollouts)
-                            worker_incremental += len(problem_rollouts)
+                            worker_count += len(problem_rollouts)
                         except json.JSONDecodeError as e:
                             logger.warning(
                                 "Failed to parse incremental rollout from worker %s: %s",
                                 worker_key, e,
                             )
-                    if worker_incremental > 0:
-                        incremental_count += worker_incremental
-                        logger.debug(
-                            "Hub collected %d incremental rollouts from worker %s",
-                            worker_incremental, worker_key,
+                    if worker_count > 0:
+                        total_count += worker_count
+                        logger.info(
+                            "Hub collected %d rollouts from worker %s",
+                            worker_count, worker_key,
                         )
 
-                # Also collect from batch push (legacy/fallback)
-                rollouts_key = self._rollouts_key(window, worker_key)
-                data = self.client.get(rollouts_key)
-
-                if data:
-                    try:
-                        parsed = json.loads(data)
-                        worker_rollouts = parsed.get("rollouts", [])
-                        all_rollouts.extend(worker_rollouts)
-                        batch_count += len(worker_rollouts)
-                        logger.debug(
-                            "Hub aggregated %d batch rollouts from worker %s",
-                            len(worker_rollouts), worker_key,
-                        )
-                    except json.JSONDecodeError as e:
-                        logger.warning("Failed to parse rollouts from worker %s: %s", worker_key, e)
-
-            if incremental_count > 0 or batch_count > 0:
-                logger.info(
-                    "Hub collected rollouts: %d incremental + %d batch = %d total",
-                    incremental_count, batch_count, incremental_count + batch_count,
-                )
+            logger.info(
+                "Hub collected %d total rollouts from %d workers for window %d",
+                total_count, len(worker_keys), window,
+            )
 
             # Deduplicate by (rollout_group, rollout_index)
             if all_rollouts:
