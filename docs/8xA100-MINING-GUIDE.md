@@ -983,10 +983,19 @@ In multi-worker setups, all workers generate rollouts but only **worker 0 (leade
 ### How It Works
 
 1. **Incremental Push**: Each worker pushes rollouts to Redis immediately after each problem completes (you'll see `📤 Worker ... pushed` logs)
-2. **Hub Aggregation**: When hub finishes generation, it collects all rollouts from Redis (no waiting/timeouts)
-3. **Upload**: Hub uploads the combined file to R2
+2. **Hub Signals Stop**: Hub signals all workers to stop generation
+3. **15s Grace Period**: Hub waits 15 seconds for workers to finish their current problem
+4. **Hub Aggregation**: Hub collects all rollouts from Redis
+5. **Upload**: Hub uploads the combined file to R2
 
-Since rollouts are pushed incrementally, they're already in Redis when aggregation happens. No waiting for workers means no timeout-related gaps.
+Since rollouts are pushed incrementally, they're already in Redis when aggregation happens. The 15s grace period ensures workers can finish their in-progress problem before aggregation.
+
+### Stale Claim Recycling
+
+If a worker crashes mid-generation, its claimed problem will be recycled:
+- **Timeout**: 10 seconds (configurable via `GRAIL_CLAIM_TIMEOUT`)
+- **Check frequency**: Every iteration on hub
+- You'll see: `♻️ Hub recycled stale problem X for window Y`
 
 ### Verifying Aggregation
 
@@ -1005,6 +1014,8 @@ pm2 logs | grep "Hub collected"
 📤 Worker node-1:worker0 pushed 16 rollouts for problem 0 (window 7149180)
 📤 Worker node-1:worker0 pushed 16 rollouts for problem 4 (window 7149180)
 📤 Worker node-1:worker1 pushed 16 rollouts for problem 1 (window 7149180)
+...
+⏳ Hub waiting 15s for workers to finish current problems...
 ...
 Hub collected 150 rollouts from worker node-1:worker0
 Hub collected 148 rollouts from worker node-1:worker1
@@ -1136,14 +1147,8 @@ Leader aggregated 1152 total rollouts from 8 workers for window 7155540 (sorted 
 **Aggregation with gap detected:**
 ```
 ⚠️ GAP at problem 59: Truncated 160 rollouts (keeping 59 contiguous problems [0-58])
-Leader aggregated 944 total rollouts from 8 workers for window 7155540 (sorted by problem_index)
+Hub aggregated 944 total rollouts from 8 workers for window 7155540
 ```
-
-**Duplicate detection (expected with incremental pushing):**
-```
-Hub: removed 1200 duplicate rollouts from aggregation
-```
-This is **expected behavior** with incremental pushing enabled. Each problem's rollouts are pushed twice: once incrementally (immediately after generation) and once in the batch push (at window end). The deduplication removes the overlap, keeping one copy of each rollout.
 
 The truncated rollouts would have failed validation anyway, so it's better to upload fewer valid rollouts than more invalid ones.
 
@@ -1152,14 +1157,15 @@ The truncated rollouts would have failed validation anyway, so it's better to up
 With the shared problem queue and incremental pushing, gaps are effectively eliminated because:
 
 1. **Sequential claiming**: Problems are claimed in order (0, 1, 2, 3...) regardless of which worker claims them
-2. **Incremental pushing**: Each problem's rollouts are pushed to Redis immediately after completion - if a worker crashes or early-exits, already-completed problems are preserved
-3. **No pre-assignment**: Workers don't have "assigned" problems that might not get completed
-4. **Work stealing**: Faster workers claim more problems, but the sequence is always contiguous
+2. **Incremental pushing**: Each problem's rollouts are pushed to Redis immediately after completion
+3. **15s grace period**: Hub waits for workers to finish their current problem before aggregating
+4. **Fast recycling**: Stale claims are detected within 10s and recycled for another worker
+5. **Work stealing**: Faster workers claim more problems, but the sequence is always contiguous
 
 **When gaps might still occur:**
-- Worker crashes mid-generation of a specific problem (before incremental push completes)
+- Worker crashes mid-generation AND recycling doesn't complete in time
 - Redis connectivity issues during push
-- Filesystem issues with the counter file
+- All workers fail to complete a specific problem
 
 In these rare cases, the truncation fallback kicks in. But under normal operation, you should see "✅ No gaps" in every window.
 
