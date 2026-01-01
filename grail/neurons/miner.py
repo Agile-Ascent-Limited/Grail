@@ -84,6 +84,10 @@ from grail.cli.mine import (
     has_time_for_next_generation,
     upload_inferences_with_metrics,
 )
+from grail.environments.execution import (
+    CodeExecutionPool,
+    set_global_execution_pool,
+)
 from grail.infrastructure.chain import GrailChainManager, fetch_trainer_bucket_sync
 from grail.trainer.config import EvalConfig
 from grail.trainer.inference_server import ServerConfig, VLLMServerManager
@@ -224,6 +228,36 @@ class MinerNeuron(BaseNeuron):
             # Initialize heartbeat (watchdog will monitor for stalls)
             self.heartbeat()
             logger.info("✅ Initialized watchdog heartbeat")
+
+            # Initialize fast code execution pool for MBPP/HumanEval environments
+            # This eliminates ~6s spawn overhead per code execution (50-100x speedup)
+            execution_pool: CodeExecutionPool | None = None
+            try:
+                execution_pool = CodeExecutionPool(
+                    num_workers=4,  # Fewer workers for miner (less parallel load)
+                    max_tasks_per_child=50,
+                )
+                execution_pool.start()
+                set_global_execution_pool(execution_pool)
+                logger.info("✅ Fast code execution pool initialized: %d workers", 4)
+            except Exception as e:
+                logger.warning("⚠️ Failed to init execution pool, using slow path: %s", e)
+                execution_pool = None
+
+            def _cleanup_execution_pool() -> None:
+                nonlocal execution_pool
+                if execution_pool is not None:
+                    try:
+                        logger.info("Shutting down code execution pool...")
+                        set_global_execution_pool(None)
+                        execution_pool.shutdown()
+                        execution_pool = None
+                        logger.info("✅ Code execution pool shutdown complete")
+                    except Exception as e:
+                        logger.warning(f"Error shutting down execution pool: {e}")
+
+            self.register_shutdown_callback(_cleanup_execution_pool)
+            self.heartbeat()
 
             # Create worker barrier for leader-follower synchronization
             barrier = WorkerBarrier(
