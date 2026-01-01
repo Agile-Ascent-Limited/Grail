@@ -579,6 +579,20 @@ pm2 startup
 > - **Cache**: Stores model checkpoints (~10-20GB). Put on **fast NVMe** for quick loading.
 >   Update `GRAIL_CACHE_DIR` in `.env` if using a different path.
 
+### Log Rotation (Recommended)
+
+Install PM2 log rotation to prevent logs from filling up disk:
+
+```bash
+# Install log rotation module
+pm2 install pm2-logrotate
+
+# Configure rotation settings
+pm2 set pm2-logrotate:max_size 500M    # Rotate when log reaches 500MB
+pm2 set pm2-logrotate:retain 5         # Keep last 5 rotated files
+pm2 set pm2-logrotate:compress true    # Compress old logs with gzip
+```
+
 ### Management Commands
 
 ```bash
@@ -2022,6 +2036,12 @@ nano .env  # Edit with your wallet names, R2 credentials, etc.
 mkdir -p /var/log/grail /var/cache/grail
 pm2 start ecosystem.config.js
 pm2 save
+
+# 6b. Setup log rotation (prevents disk fill)
+pm2 install pm2-logrotate
+pm2 set pm2-logrotate:max_size 500M
+pm2 set pm2-logrotate:retain 5
+pm2 set pm2-logrotate:compress true
 
 # 7. Monitor
 pm2 logs
