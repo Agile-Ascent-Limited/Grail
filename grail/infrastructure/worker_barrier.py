@@ -1331,8 +1331,8 @@ class RedisRolloutAggregator:
             self.client.sadd(workers_key, self.worker_key)
             self.client.expire(workers_key, REDIS_ROLLOUT_TTL)
 
-            logger.debug(
-                "Worker %s pushed %d rollouts for problem %d (window %d)",
+            logger.info(
+                "📤 Worker %s pushed %d rollouts for problem %d (window %d)",
                 self.worker_key, len(rollouts), problem_index, window,
             )
             return True
