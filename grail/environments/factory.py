@@ -25,7 +25,7 @@ def get_or_create_task_source(
     Thread-safe for read-heavy workloads (protected by Python GIL).
 
     Args:
-        env_id: Environment identifier (sat, gsm8k, math)
+        env_id: Environment identifier (sat, gsm8k, math, mbpp, python_code, humaneval)
         split: Dataset split (train, test, validation)
 
     Returns:
@@ -59,6 +59,16 @@ def get_or_create_task_source(
             from .providers import MATHTaskSource
 
             _TASK_SOURCE_CACHE[cache_key] = MATHTaskSource(split=split)
+
+        elif env_id in ("mbpp", "python_code"):
+            from .providers import MBPPTaskSource
+
+            _TASK_SOURCE_CACHE[cache_key] = MBPPTaskSource(split=split)
+
+        elif env_id == "humaneval":
+            from .providers import HumanEvalTaskSource
+
+            _TASK_SOURCE_CACHE[cache_key] = HumanEvalTaskSource()
 
         else:
             raise ValueError(f"Unknown environment ID: {env_id}")
@@ -141,6 +151,24 @@ def create_env(
             task_source if task_source is not None else get_or_create_task_source(env_id, split)
         )
         return MATHEnv(task_source=source)
+
+    if env_id in ("mbpp", "python_code"):
+        from .python_code_env import PythonCodeEnv
+
+        # Use provided source OR get from cache
+        source = (
+            task_source if task_source is not None else get_or_create_task_source(env_id, split)
+        )
+        return PythonCodeEnv(dataset="mbpp", split=split, task_source=source)
+
+    if env_id == "humaneval":
+        from .python_code_env import PythonCodeEnv
+
+        # Use provided source OR get from cache
+        source = (
+            task_source if task_source is not None else get_or_create_task_source(env_id, split)
+        )
+        return PythonCodeEnv(dataset="humaneval", split="test", task_source=source)
 
     raise ValueError(f"Unknown environment ID: {env_id}")
 

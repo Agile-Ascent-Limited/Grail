@@ -39,6 +39,8 @@ _DOWNLOAD_ONLY = os.getenv("GRAIL_DOWNLOAD_ONLY", "0").lower() in ("1", "true", 
 # Use: GRAIL_PREFETCH_MODE=1 grail mine
 _PREFETCH_MODE = os.getenv("GRAIL_PREFETCH_MODE", "0").lower() in ("1", "true", "yes")
 _PREFETCH_INTERVAL = int(os.getenv("GRAIL_PREFETCH_INTERVAL", "30"))  # Check every N seconds
+# Prefetch FULL checkpoints only (for cold start optimization across workers)
+_PREFETCH_FULL_ONLY = os.getenv("GRAIL_PREFETCH_FULL_ONLY", "1").lower() in ("1", "true", "yes")
 
 if _ENABLE_PRECISION_TUNING:
     # Disable TF32 - uses 19-bit precision instead of 23-bit, causes drift
@@ -453,6 +455,8 @@ class MinerNeuron(BaseNeuron):
             if _PREFETCH_MODE:
                 logger.info("🔄 Prefetch mode: continuously watching for new checkpoints...")
                 logger.info(f"🔄 Check interval: {_PREFETCH_INTERVAL}s (set GRAIL_PREFETCH_INTERVAL to change)")
+                if _PREFETCH_FULL_ONLY:
+                    logger.info("🔄 FULL-only mode: will only prefetch FULL checkpoints (cold start optimized)")
 
                 last_downloaded_window: int | None = None
 
@@ -463,10 +467,15 @@ class MinerNeuron(BaseNeuron):
                         current_block = await subtensor.get_current_block()
                         self.heartbeat()
 
-                        # Discover latest ready checkpoint
-                        checkpoint_window = await checkpoint_manager.get_latest_ready_checkpoint(
-                            current_block
-                        )
+                        # Discover latest checkpoint (FULL-only or any)
+                        if _PREFETCH_FULL_ONLY:
+                            checkpoint_window = await checkpoint_manager.get_latest_full_checkpoint(
+                                current_block
+                            )
+                        else:
+                            checkpoint_window = await checkpoint_manager.get_latest_ready_checkpoint(
+                                current_block
+                            )
 
                         if checkpoint_window is None:
                             logger.debug("No checkpoint available yet, waiting...")

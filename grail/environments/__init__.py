@@ -5,6 +5,7 @@ Exports:
 - SAT: problem generator, parser, reward, env (all from sat_env)
 - GSM8K: dataset-backed env for grade school math
 - MATH: Hendrycks MATH benchmark env with multi-strategy validation
+- PythonCode: MBPP/HumanEval code generation with test execution
 - Loop: AgentEnvLoop, GRPORollout
 - Factory: create_env, create_env_factory (preferred for instantiation)
 - Legacy: Parser, RewardVector
@@ -21,6 +22,14 @@ from .core import (  # noqa: F401
     TaskSource,
 )
 from .dataset_base import MathDatasetEnv  # noqa: F401
+from .execution import (  # noqa: F401
+    CodeExecutionPool,
+    check_code_executes,
+    check_code_executes_fast,
+    execute_code,
+    get_global_execution_pool,
+    set_global_execution_pool,
+)
 from .factory import (  # noqa: F401
     clear_task_source_cache,
     create_env,
@@ -30,7 +39,14 @@ from .factory import (  # noqa: F401
 from .gsm8k_env import GSM8KEnv  # noqa: F401
 from .loop import AgentEnvLoop, GRPORollout  # noqa: F401
 from .math_hendrycks_env import MATHEnv  # noqa: F401
-from .providers import GSM8KTaskSource, MATHTaskSource, SATTaskSource  # noqa: F401
+from .providers import (  # noqa: F401
+    GSM8KTaskSource,
+    HumanEvalTaskSource,
+    MATHTaskSource,
+    MBPPTaskSource,
+    SATTaskSource,
+)
+from .python_code_env import PythonCodeEnv  # noqa: F401
 from .rubric import RewardVectorRubric  # noqa: F401
 from .sat_env import (  # noqa: F401
     SATEnv,
@@ -77,11 +93,21 @@ __all__ = [
     "SATTaskSource",
     "GSM8KTaskSource",
     "MATHTaskSource",
+    "MBPPTaskSource",
+    "HumanEvalTaskSource",
     "RewardVectorRubric",
     # Environments
     "SATEnv",
     "GSM8KEnv",
     "MATHEnv",
+    "PythonCodeEnv",
+    # Code execution
+    "CodeExecutionPool",
+    "execute_code",
+    "check_code_executes",
+    "check_code_executes_fast",
+    "get_global_execution_pool",
+    "set_global_execution_pool",
     # Factory functions (preferred)
     "create_env",
     "create_env_factory",

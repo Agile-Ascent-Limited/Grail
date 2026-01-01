@@ -228,10 +228,83 @@ class MATHEnvAdapter:
         return result
 
 
+@dataclass(frozen=True)
+class PythonCodeEnvAdapter:
+    """Python code generation adapter backed by PythonCodeEnv.
+
+    Uses MBPP or HumanEval datasets for code generation tasks.
+    Rewards based on test case execution results.
+    """
+
+    dataset: str = "mbpp"
+
+    def build_prompt_ids(
+        self,
+        seed: int,
+        tokenizer: PreTrainedTokenizerBase,
+    ) -> list[int]:
+        from .factory import create_env
+
+        env = create_env(self.dataset)
+        obs = env.reset(seed=seed)
+        messages = [{"role": m.role, "content": m.content} for m in obs.messages]
+
+        rendered = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        toks = tokenizer(
+            rendered,
+            return_tensors="pt",
+            return_attention_mask=False,
+        )
+        input_ids_tensor = toks.input_ids[0]
+        ids: list[int] = [int(v) for v in input_ids_tensor.tolist()]
+
+        # Debug: log rendered prompt text for comparison with miner
+        logger.debug(
+            ("VALIDATOR RENDERED PROMPT (PythonCode): length=%d chars, tokens=%d\n%s, seed=%d"),
+            len(rendered),
+            len(ids),
+            rendered,
+            int(seed),
+        )
+
+        return ids
+
+    def evaluate_completion(
+        self,
+        seed: int,
+        completion_text: str,
+        tokenizer: PreTrainedTokenizerBase,
+    ) -> dict:
+        from .core import ChatMessage
+        from .factory import create_env
+
+        env = create_env(self.dataset)
+        env.reset(seed=int(seed))
+
+        _obs, reward, _terminated, _truncated, info = env.step(
+            ChatMessage(role="assistant", content=completion_text)
+        )
+        success = bool(info.get("success", False))
+        result = {"success": success, "reward": float(reward)}
+        # Include test execution details for diagnostics
+        if "tests_passed" in info:
+            result["tests_passed"] = info["tests_passed"]
+        if "tests_total" in info:
+            result["tests_total"] = info["tests_total"]
+        if "reward_components" in info:
+            result["reward_components"] = info["reward_components"]
+        return result
+
+
 _REGISTRY: dict[str, EnvAdapter] = {
     "sat": cast(EnvAdapter, SATEnvAdapter()),
     "gsm8k": cast(EnvAdapter, GSM8KEnvAdapter()),
     "math": cast(EnvAdapter, MATHEnvAdapter()),
+    "mbpp": cast(EnvAdapter, PythonCodeEnvAdapter(dataset="mbpp")),
+    "python_code": cast(EnvAdapter, PythonCodeEnvAdapter(dataset="mbpp")),
+    "humaneval": cast(EnvAdapter, PythonCodeEnvAdapter(dataset="humaneval")),
 }
 
 

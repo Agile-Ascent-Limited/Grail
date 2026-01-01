@@ -606,10 +606,21 @@ class CheckpointManager:
             - result.method: "fast" or "full" or "none"
             - checkpoint_path: Path to checkpoint (None if fast path used)
         """
-        # Discover latest ready checkpoint
-        checkpoint_window = await self.get_latest_ready_checkpoint(target_window)
-        if checkpoint_window is None:
-            return CheckpointLoadResult(success=False), None
+        # Cold start: use latest FULL checkpoint to minimize delta chain length
+        # This ensures we can reconstruct from available deltas in retention window
+        if model is None or current_window is None or current_window < 0:
+            checkpoint_window = await self.get_latest_full_checkpoint(target_window)
+            if checkpoint_window is None:
+                # Fallback to any checkpoint if no FULL checkpoint found
+                logger.debug("No FULL checkpoint found, falling back to any ready checkpoint")
+                checkpoint_window = await self.get_latest_ready_checkpoint(target_window)
+                if checkpoint_window is None:
+                    return CheckpointLoadResult(success=False), None
+        else:
+            # Model already loaded: can use deltas, so any checkpoint works
+            checkpoint_window = await self.get_latest_ready_checkpoint(target_window)
+            if checkpoint_window is None:
+                return CheckpointLoadResult(success=False), None
 
         # Already at this checkpoint
         if checkpoint_window == current_window and model is not None:
@@ -1635,6 +1646,99 @@ class CheckpointManager:
 
         except Exception as exc:
             logger.error("Failed to discover latest ready checkpoint: %s", exc)
+            return None
+
+    async def get_latest_full_checkpoint(self, before_window: int) -> int | None:
+        """Find the latest FULL checkpoint that became READY before the given window.
+
+        For cold starts, using a FULL checkpoint minimizes delta chain length and
+        ensures we can reconstruct from available deltas in the retention window.
+
+        Optimization: Parses READY markers locally first, then checks from newest
+        to oldest, stopping at the first FULL checkpoint found.
+
+        Args:
+            before_window: Upper bound (exclusive) for ready_window
+
+        Returns:
+            Checkpoint window number of latest FULL checkpoint, or None if none found
+        """
+        try:
+            # List all checkpoint directories
+            keys = await comms.list_bucket_files(
+                CHECKPOINT_PREFIX,
+                credentials=self.credentials,
+                use_write=False,
+            )
+
+            # Parse all READY-{ready_window} markers
+            candidates: list[tuple[int, int]] = []  # (ready_window, checkpoint_window)
+            for key in keys:
+                if "/READY-" in key:
+                    try:
+                        # Parse: "grail/checkpoints/checkpoint-1000/READY-1100"
+                        parts = key.split("/")
+                        if len(parts) >= 4:
+                            checkpoint_segment = parts[2]  # "checkpoint-1000"
+                            ready_filename = parts[3]  # "READY-1100"
+
+                            if checkpoint_segment.startswith(
+                                "checkpoint-"
+                            ) and ready_filename.startswith("READY-"):
+                                checkpoint_window = int(checkpoint_segment.split("-")[1])
+                                ready_window = int(ready_filename.split("-")[1])
+
+                                # Only consider checkpoints that became ready before our window
+                                if ready_window < before_window:
+                                    candidates.append((ready_window, checkpoint_window))
+                    except (IndexError, ValueError):
+                        continue
+
+            if not candidates:
+                logger.debug(
+                    "No READY checkpoints found before window %s for FULL scan",
+                    before_window,
+                )
+                return None
+
+            # Sort by ready_window descending (most recently ready first)
+            candidates.sort(reverse=True)
+
+            # Check each candidate from newest to oldest, return first FULL
+            for ready_window, checkpoint_window in candidates:
+                try:
+                    # Check if this checkpoint has a FULL subdirectory
+                    full_metadata_key = checkpoint_full_metadata_key(checkpoint_window)
+                    metadata_bytes = await comms.download_file_chunked(
+                        full_metadata_key,
+                        credentials=self.credentials,
+                        use_write=False,
+                    )
+
+                    if metadata_bytes is not None:
+                        # Verify it's actually a FULL checkpoint
+                        metadata_dict = json.loads(metadata_bytes.decode("utf-8"))
+                        if metadata_dict.get("checkpoint_type") == CHECKPOINT_TYPE_FULL:
+                            logger.info(
+                                "Found latest FULL checkpoint: checkpoint-%s (ready at window %s)",
+                                checkpoint_window,
+                                ready_window,
+                            )
+                            return checkpoint_window
+
+                except Exception as e:
+                    logger.debug(
+                        "Checkpoint %s is not FULL or inaccessible: %s",
+                        checkpoint_window,
+                        e,
+                    )
+                    continue
+
+            logger.debug("No FULL checkpoints found before window %s", before_window)
+            return None
+
+        except Exception as exc:
+            logger.error("Failed to discover latest FULL checkpoint: %s", exc)
             return None
 
 

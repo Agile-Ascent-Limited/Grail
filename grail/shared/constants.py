@@ -92,7 +92,7 @@ TRAINER_MIN_TRUSTED_MINERS = int(os.getenv("GRAIL_TRAINER_MIN_TRUSTED_MINERS", "
 # Stage 1 (fast structural/cheap filters) happens before Stage 2.
 # Defaults are conservative so behavior is unchanged unless configured.
 GRPO_MAX_GROUPS = int(os.getenv("GRAIL_GRPO_MAX_GROUPS", "32"))
-GRPO_MAX_COMPLETION_TOKENS = int(os.getenv("GRAIL_GRPO_MAX_COMPLETION_TOKENS", "1024"))
+GRPO_MAX_COMPLETION_TOKENS = int(os.getenv("GRAIL_GRPO_MAX_COMPLETION_TOKENS", "2048"))
 
 # GRPO loss aggregation variant
 # Options: 'grpo' (per-sequence), 'bnpo' (global token avg),
@@ -145,7 +145,7 @@ LAYER_INDEX = -1
 
 # ────────────────  TERMINATION VALIDATION HPs  ────────────────
 
-MAX_NEW_TOKENS = 1024
+MAX_NEW_TOKENS = 2048
 
 # Must match rollout generator default
 MIN_EOS_PROBABILITY = 0.02  # Minimum probability for valid EOS termination
