@@ -1983,6 +1983,9 @@ Score uses `rollouts^4.0`, so doubling rollouts = 16x score.
 curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.bashrc
 git clone https://github.com/Agile-Ascent-Limited/Grail.git && cd grail
 
+# 1b. Add convenience alias (quick access from anywhere)
+echo 'grailv() { cd /root/Grail && source .venv/bin/activate; }' >> ~/.bashrc && source ~/.bashrc
+
 # 2. Install dependencies
 uv venv --python 3.10 && source .venv/bin/activate
 uv sync
