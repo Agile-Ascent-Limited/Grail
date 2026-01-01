@@ -19,7 +19,7 @@ module.exports = {
       env: {
         GRAIL_PREFETCH_MODE: "1",
         GRAIL_PREFETCH_INTERVAL: "15",
-        GRAIL_PREFETCH_FULL_ONLY: "1",  // Only prefetch FULL checkpoints (cold start optimized)
+        GRAIL_PREFETCH_FULL_ONLY: "0",  // Prefetch ALL checkpoints (FULL + DELTA) to keep cache warm
         BT_WALLET_NAME: "c73",
         BT_HOTKEY_NAME: "c73-h10",
         SUBTENSOR_NETWORK: "finney",

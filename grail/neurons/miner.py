@@ -40,7 +40,8 @@ _DOWNLOAD_ONLY = os.getenv("GRAIL_DOWNLOAD_ONLY", "0").lower() in ("1", "true", 
 _PREFETCH_MODE = os.getenv("GRAIL_PREFETCH_MODE", "0").lower() in ("1", "true", "yes")
 _PREFETCH_INTERVAL = int(os.getenv("GRAIL_PREFETCH_INTERVAL", "30"))  # Check every N seconds
 # Prefetch FULL checkpoints only (for cold start optimization across workers)
-_PREFETCH_FULL_ONLY = os.getenv("GRAIL_PREFETCH_FULL_ONLY", "1").lower() in ("1", "true", "yes")
+# Default "0" = prefetch ALL checkpoints (FULL + DELTA) to keep cache warm
+_PREFETCH_FULL_ONLY = os.getenv("GRAIL_PREFETCH_FULL_ONLY", "0").lower() in ("1", "true", "yes")
 
 if _ENABLE_PRECISION_TUNING:
     # Disable TF32 - uses 19-bit precision instead of 23-bit, causes drift
