@@ -56,3 +56,11 @@ else
     ls -la *.config.js 2>/dev/null || echo "  No .config.js files found"
     exit 1
 fi
+
+# Start prefetch daemon (optional - keeps checkpoint cache warm)
+if [ -f "prefetch.config.js" ]; then
+    echo ""
+    echo "=== Starting checkpoint prefetch daemon ==="
+    pm2 start prefetch.config.js
+    echo "Prefetch daemon started."
+fi
