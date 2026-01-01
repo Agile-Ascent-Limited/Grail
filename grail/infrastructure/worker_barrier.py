@@ -1369,7 +1369,7 @@ class RedisRolloutAggregator:
         last_count = 0
         stall_start = None
         # Exit if no progress for N seconds after early threshold (configurable)
-        stall_timeout = float(os.getenv("GRAIL_HUB_STALL_TIMEOUT", "30"))
+        stall_timeout = float(os.getenv("GRAIL_HUB_STALL_TIMEOUT", "45"))
 
         while True:
             elapsed = time.time() - start_time
