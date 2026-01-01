@@ -1369,7 +1369,7 @@ class RedisRolloutAggregator:
         last_count = 0
         stall_start = None
         # Exit if no progress for N seconds after early threshold (configurable)
-        stall_timeout = float(os.getenv("GRAIL_HUB_STALL_TIMEOUT", "45"))
+        stall_timeout = float(os.getenv("GRAIL_HUB_STALL_TIMEOUT", "30"))
 
         while True:
             elapsed = time.time() - start_time
@@ -1418,7 +1418,7 @@ class RedisRolloutAggregator:
 
     # Backward compatibility alias
     async def wait_for_nodes(
-        self, window: int, timeout: float = 45.0, min_nodes: int | None = None
+        self, window: int, timeout: float = 30.0, min_nodes: int | None = None
     ) -> int:
         """Deprecated: use wait_for_workers instead."""
         min_workers = min_nodes * self.total_workers if min_nodes else None
