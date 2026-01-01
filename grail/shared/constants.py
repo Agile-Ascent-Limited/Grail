@@ -190,7 +190,7 @@ ROLLOUTS_PER_PROBLEM = 16
 # ────────────────  ENVIRONMENT CONFIGURATION  ────────────────
 
 # Current environment ID (validators use this constant, never trust miner data)
-CURRENT_ENV_ID = "math"
+CURRENT_ENV_ID = "mbpp"
 
 # ────────────────  EMISSION BURN MECHANISM  ────────────────
 
