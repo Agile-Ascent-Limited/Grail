@@ -236,7 +236,8 @@ class PythonCodeEnvAdapter:
     Rewards based on test case execution results.
     """
 
-    dataset: str = "mbpp"
+    dataset: str = "mbpp"  # "mbpp" or "humaneval"
+    split: str = "train"  # "train", "validation", "test"
 
     def build_prompt_ids(
         self,
@@ -245,7 +246,8 @@ class PythonCodeEnvAdapter:
     ) -> list[int]:
         from .factory import create_env
 
-        env = create_env(self.dataset)
+        env_id = "humaneval" if self.dataset == "humaneval" else "mbpp"
+        env = create_env(env_id, split=self.split)
         obs = env.reset(seed=seed)
         messages = [{"role": m.role, "content": m.content} for m in obs.messages]
 
@@ -262,7 +264,7 @@ class PythonCodeEnvAdapter:
 
         # Debug: log rendered prompt text for comparison with miner
         logger.debug(
-            ("VALIDATOR RENDERED PROMPT (PythonCode): length=%d chars, tokens=%d\n%s, seed=%d"),
+            ("VALIDATOR RENDERED PROMPT (PYTHON): length=%d chars, tokens=%d\n%s, seed=%d"),
             len(rendered),
             len(ids),
             rendered,
@@ -280,21 +282,25 @@ class PythonCodeEnvAdapter:
         from .core import ChatMessage
         from .factory import create_env
 
-        env = create_env(self.dataset)
+        env_id = "humaneval" if self.dataset == "humaneval" else "mbpp"
+        env = create_env(env_id, split=self.split)
         env.reset(seed=int(seed))
 
         _obs, reward, _terminated, _truncated, info = env.step(
             ChatMessage(role="assistant", content=completion_text)
         )
         success = bool(info.get("success", False))
-        result = {"success": success, "reward": float(reward)}
-        # Include test execution details for diagnostics
-        if "tests_passed" in info:
-            result["tests_passed"] = info["tests_passed"]
-        if "tests_total" in info:
-            result["tests_total"] = info["tests_total"]
-        if "reward_components" in info:
-            result["reward_components"] = info["reward_components"]
+        result = {
+            "success": success,
+            "reward": float(reward),
+            "tests_passed": info.get("tests_passed", 0),
+            "tests_total": info.get("tests_total", 0),
+        }
+        # Include diagnostics
+        if "syntax_valid" in info:
+            result["syntax_valid"] = info["syntax_valid"]
+        if "has_code" in info:
+            result["has_code"] = info["has_code"]
         return result
 
 
@@ -302,9 +308,9 @@ _REGISTRY: dict[str, EnvAdapter] = {
     "sat": cast(EnvAdapter, SATEnvAdapter()),
     "gsm8k": cast(EnvAdapter, GSM8KEnvAdapter()),
     "math": cast(EnvAdapter, MATHEnvAdapter()),
-    "mbpp": cast(EnvAdapter, PythonCodeEnvAdapter(dataset="mbpp")),
-    "python_code": cast(EnvAdapter, PythonCodeEnvAdapter(dataset="mbpp")),
-    "humaneval": cast(EnvAdapter, PythonCodeEnvAdapter(dataset="humaneval")),
+    "mbpp": cast(EnvAdapter, PythonCodeEnvAdapter(dataset="mbpp", split="train")),
+    "python_code": cast(EnvAdapter, PythonCodeEnvAdapter(dataset="mbpp", split="train")),
+    "humaneval": cast(EnvAdapter, PythonCodeEnvAdapter(dataset="humaneval", split="test")),
 }
 
 
