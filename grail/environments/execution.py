@@ -764,6 +764,17 @@ def _pool_worker_init() -> None:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
+    # Optionally suppress stdout/stderr to prevent code output leaking to logs
+    # Set GRAIL_HIDE_TEST_OUTPUT=1 to suppress test outputs for cleaner logs
+    if os.environ.get("GRAIL_HIDE_TEST_OUTPUT", "0") == "1":
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, 1)  # stdout
+            os.dup2(devnull, 2)  # stderr
+            os.close(devnull)
+        except Exception:
+            pass
+
     _suppress_execution_sandbox_noise()
 
     faulthandler.disable()

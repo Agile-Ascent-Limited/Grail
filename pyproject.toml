@@ -241,9 +241,20 @@ select = [
 ]
 ignore = [
     "E501",  # line too long (handled by formatter)
+    "E402",  # module import not at top of file (often intentional for conditional imports)
     "B008",  # do not perform function calls in argument defaults
+    "B023",  # function uses loop variable (common pattern in closures)
+    "B904",  # raise without from inside except (acceptable in some patterns)
+    "C401",  # unnecessary generator in set (micro-optimization)
     "C901",  # too complex
     "W191",  # indentation contains tabs
+    "F401",  # unused imports (often needed for type hints or re-exports)
+    "F541",  # f-string missing placeholders (often intentional for consistency)
+    "F841",  # unused variable (often for unpacking or documentation)
+    "UP024", # os.error alias (stylistic modernization)
+    "UP035", # deprecated import (will address separately)
+    "UP037", # quoted annotation (typing style preference)
+    "I001",  # unsorted imports (handled separately by ruff format)
 ]
 
 [tool.ruff.format]

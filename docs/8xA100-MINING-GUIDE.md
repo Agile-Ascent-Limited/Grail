@@ -545,6 +545,15 @@ bash scripts/start_vllm_servers.sh
 cat /var/log/grail/vllm/vllm-server-0.log
 ```
 
+### Code Execution Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GRAIL_HIDE_TEST_OUTPUT` | `0` | Set to `1` to suppress test execution outputs in logs |
+| `TOKENIZERS_PARALLELISM` | `true` | Set to `false` to suppress HuggingFace tokenizer fork warnings |
+
+**Note:** By default, MBPP test execution outputs (True/False, function returns, etc.) are visible in logs for debugging. Set `GRAIL_HIDE_TEST_OUTPUT=1` in ecosystem.config.js for cleaner production logs.
+
 ---
 
 ## Running the Miners
