@@ -36,6 +36,7 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',  // Suppress fork warnings from HF tokenizers
         // Multi-node settings (WORKER - pushes to Redis, doesn't upload)
         // IMPORTANT: Update these values!
         GRAIL_REDIS_URL: 'redis://185.216.23.78:6379/0',  // <-- CHANGE THIS to hub's IP
@@ -66,6 +67,7 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         // All workers need Redis for problem claiming
         GRAIL_REDIS_URL: 'redis://185.216.23.78:6379/0',  // <-- CHANGE THIS to hub's IP
       },
@@ -92,6 +94,7 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://185.216.23.78:6379/0',
       },
       max_memory_restart: '80G',
@@ -117,6 +120,7 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://185.216.23.78:6379/0',
       },
       max_memory_restart: '80G',
@@ -142,6 +146,7 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://185.216.23.78:6379/0',
       },
       max_memory_restart: '80G',
@@ -167,6 +172,7 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://185.216.23.78:6379/0',
       },
       max_memory_restart: '80G',
@@ -192,6 +198,7 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://185.216.23.78:6379/0',
       },
       max_memory_restart: '80G',
@@ -217,6 +224,7 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://185.216.23.78:6379/0',
       },
       max_memory_restart: '80G',
