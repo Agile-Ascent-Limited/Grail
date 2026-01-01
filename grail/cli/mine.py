@@ -667,8 +667,8 @@ async def generate_rollouts_for_window(
 
         # HUB ONLY: Recycle stale claims (claimed but not completed within timeout)
         # This allows stuck/crashed worker problems to be re-claimed by other workers
-        # Only check every 3 iterations to reduce Redis overhead
-        if is_hub and inference_count % 3 == 0:
+        # Check every iteration for fast gap detection (Redis overhead is negligible)
+        if is_hub:
             recycled = problem_queue.recycle_stale_claims(window_start)
             if recycled > 0:
                 logger.info("♻️ Hub recycled %d stale claims for window %d", recycled, window_start)

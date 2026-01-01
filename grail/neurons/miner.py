@@ -996,6 +996,11 @@ class MinerNeuron(BaseNeuron):
                             redis_aggregator.signal_done(window_start)
 
                             if redis_aggregator.is_hub:
+                                # Hub: wait for workers to finish their current problem
+                                # Workers check stop signal at loop top, so they may still be
+                                # mid-generation when hub finishes. Give them time to push.
+                                logger.info("⏳ Hub waiting 15s for workers to finish current problems...")
+                                await asyncio.sleep(15)
                                 # Hub: aggregate from Redis (rollouts already pushed incrementally)
                                 all_inferences = redis_aggregator.aggregate_from_workers(window_start)
                                 logger.info(

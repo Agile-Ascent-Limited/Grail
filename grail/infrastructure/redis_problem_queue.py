@@ -32,7 +32,8 @@ CLAIM_TTL = 600  # 10 minutes
 
 # Timeout for claim recycling - if a problem is claimed but not completed
 # within this time, the hub can recycle it for another worker to claim
-CLAIM_TIMEOUT_SECONDS = float(os.getenv("GRAIL_CLAIM_TIMEOUT", "30"))
+# Default 10s - fast enough to catch crashes, slow enough to not recycle in-progress work
+CLAIM_TIMEOUT_SECONDS = float(os.getenv("GRAIL_CLAIM_TIMEOUT", "10"))
 
 # Shared node ID key PREFIX - actual key is per-hostname to prevent cross-node collision
 # Each physical node uses: grail:config:node_id:{hostname}
