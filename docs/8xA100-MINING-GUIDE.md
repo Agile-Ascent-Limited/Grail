@@ -993,9 +993,15 @@ Since rollouts are pushed incrementally, they're already in Redis when aggregati
 ### Stale Claim Recycling
 
 If a worker crashes mid-generation, its claimed problem will be recycled:
-- **Timeout**: 10 seconds (configurable via `GRAIL_CLAIM_TIMEOUT`)
+- **Timeout**: 45 seconds default (configurable via `GRAIL_CLAIM_TIMEOUT`)
 - **Check frequency**: Every iteration on hub
 - You'll see: `♻️ Hub recycled stale problem X for window Y`
+
+**Why 45 seconds?** The default was increased from 10s to accommodate:
+- Cross-datacenter Redis latency (workers waiting 10+ seconds for Redis block cache)
+- Combined with generation time (~10s), workers need more than 10s to complete
+
+If you have workers in a different datacenter than your Redis server, you may see "Waiting for Redis block cache" logs. The 45s timeout ensures these workers complete their problems instead of having them recycled as stale.
 
 ### Verifying Aggregation
 
@@ -1159,7 +1165,7 @@ With the shared problem queue and incremental pushing, gaps are effectively elim
 1. **Sequential claiming**: Problems are claimed in order (0, 1, 2, 3...) regardless of which worker claims them
 2. **Incremental pushing**: Each problem's rollouts are pushed to Redis immediately after completion
 3. **15s grace period**: Hub waits for workers to finish their current problem before aggregating
-4. **Fast recycling**: Stale claims are detected within 10s and recycled for another worker
+4. **Fast recycling**: Stale claims are detected within 45s and recycled for another worker
 5. **Work stealing**: Faster workers claim more problems, but the sequence is always contiguous
 
 **When gaps might still occur:**
@@ -1403,6 +1409,22 @@ This process:
 - Downloads them to the cache before the miner needs them
 - Runs indefinitely without using GPU memory
 - When your actual miner starts a new window, the checkpoint is already cached
+
+**NO_DOWNLOAD mode (default behavior):**
+
+When running with prefetch, miners automatically wait for the prefetch process to cache checkpoints instead of downloading themselves. This is enabled by default and prevents:
+- Race conditions between prefetch and miners downloading the same file
+- Duplicate downloads wasting bandwidth
+- File corruption from concurrent writes (CRC errors, zstd decompression failures)
+
+You'll see these logs when NO_DOWNLOAD mode is active:
+```
+🔄 NO_DOWNLOAD mode ENABLED - miners will wait for prefetch to cache checkpoints (poll=5s, timeout=600s)
+🔄 NO_DOWNLOAD mode: waiting for prefetch to cache checkpoint 7230570 (timeout=600s)
+✅ NO_DOWNLOAD mode: checkpoint 7230570 available from prefetch after 12.3s
+```
+
+The prefetch process (`GRAIL_PREFETCH_MODE=1`) automatically bypasses NO_DOWNLOAD mode so it can download. To disable NO_DOWNLOAD mode and allow miners to download directly (not recommended), set `GRAIL_NO_DOWNLOAD=0`.
 
 **PM2 ecosystem for A6000 with prefetch:**
 
@@ -1869,9 +1891,10 @@ Expected:
 | `GRAIL_TOTAL_NODES` | Optional | Number of nodes (default: 4) | `4` |
 | `GRAIL_STOP_BUFFER_{node}` | Hub only | Early stop buffer for slow nodes (blocks) | `GRAIL_STOP_BUFFER_node-2=2` |
 | `GRAIL_HUB_STALL_TIMEOUT` | Optional | Seconds to wait for slow nodes after 90% ready (default: 60) | `60` |
-| `GRAIL_CLAIM_TIMEOUT` | Optional | Seconds before hub recycles stale claims (default: 30) | `30` |
+| `GRAIL_CLAIM_TIMEOUT` | Optional | Seconds before hub recycles stale claims (default: 45) | `45` |
 | `GRAIL_PREFETCH_MODE` | Optional | Run in checkpoint prefetch mode (no GPU, continuous download) | `1` |
 | `GRAIL_PREFETCH_INTERVAL` | Optional | Seconds between prefetch checks (default: 30) | `30` |
+| `GRAIL_NO_DOWNLOAD` | Optional | Miners wait for prefetch instead of downloading (default: 1) | `1` |
 
 **Note on `GRAIL_NODE_ID`:** You only need to set this on **Worker 0** of each node. Worker 0 stores the node_id in Redis at key `grail:config:node_id`, and Workers 1-7 automatically read it from Redis. This ensures all workers on the same node use a consistent identifier for problem claiming and rollout tracking.
 
