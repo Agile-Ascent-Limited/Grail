@@ -79,6 +79,53 @@ check_dependencies
 ################################################################################
 # Helper: e-mail sender
 ################################################################################
+send_test_email() {
+  echo "[$(date +'%F %T')] Sending test email to $SMTP_TO..."
+
+  python3 - "$SERVER_NAME" "$SERVER_IP" "$LOG_FILE" "$EMAIL_INTERVAL" "$SMTP_USER" "$SMTP_PASS" "$SMTP_FROM" "$SMTP_TO" <<'PY'
+import sys, smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime
+
+server_name, server_ip, log_file, interval, smtp_user, smtp_pass, sender, receiver = sys.argv[1:]
+
+msg = MIMEMultipart()
+msg['Subject'] = f"[GRAIL {server_name}] Upload Monitor Started"
+msg['From']    = sender
+msg['To']      = receiver
+
+body = f"""GRAIL Upload Monitor Started
+=============================
+Server: {server_name} ({server_ip})
+Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+Configuration:
+- Log file: {log_file}
+- Report interval: {int(interval)//60} minutes
+- Email to: {receiver}
+
+This is a test email confirming the monitor is running.
+You will receive upload reports every {int(interval)//60} minutes.
+"""
+
+msg.attach(MIMEText(body, 'plain'))
+
+try:
+    with smtplib.SMTP('mail.smtp2go.com', 2525) as s:
+        s.starttls()
+        s.login(smtp_user, smtp_pass)
+        s.sendmail(sender, receiver, msg.as_string())
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Test email sent successfully")
+except Exception as e:
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] WARNING: Test email failed: {e}")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Monitor will continue, but emails may not work")
+PY
+}
+
+################################################################################
+# Helper: e-mail sender (for reports)
+################################################################################
 send_email() {
   local subject="$1"
   local body="$2"
@@ -254,6 +301,9 @@ echo "[$(date +'%F %T')] Server: $SERVER_NAME ($SERVER_IP)"
 echo "[$(date +'%F %T')] Log file: $LOG_FILE"
 echo "[$(date +'%F %T')] Email interval: $((EMAIL_INTERVAL/60)) minutes"
 echo "[$(date +'%F %T')] Email to: $SMTP_TO"
+
+# Send test email on startup
+send_test_email
 
 # Start log collector in background
 collect_logs &
