@@ -19,6 +19,7 @@ import concurrent.futures
 import contextlib
 import faulthandler
 import io
+import logging
 import multiprocessing
 import os
 import platform
@@ -890,6 +891,7 @@ class CodeExecutionPool:
         self._executor: concurrent.futures.ProcessPoolExecutor | None = None
         self._lock = threading.Lock()
         self._started = False
+        self._broken = False
 
     def start(self) -> None:
         """Start the worker pool.
@@ -935,6 +937,41 @@ class CodeExecutionPool:
                         os.environ["CUDA_DEVICE_ORDER"] = old_cuda_order
 
             self._started = True
+            self._broken = False
+
+    def _recover_pool(self) -> bool:
+        """Attempt to recover from a broken pool state.
+
+        Returns:
+            True if recovery succeeded, False otherwise
+        """
+        _logger = logging.getLogger(__name__)
+
+        with self._lock:
+            if not self._broken:
+                return True  # Pool is fine
+
+            _logger.warning("Attempting to recover broken execution pool...")
+
+            # Shutdown the broken executor
+            if self._executor is not None:
+                try:
+                    self._executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+                self._executor = None
+
+            self._started = False
+            self._broken = False
+
+        # Restart outside the lock
+        try:
+            self.start()
+            _logger.info("✅ Execution pool recovered successfully")
+            return True
+        except Exception as e:
+            _logger.error(f"Failed to recover execution pool: {e}")
+            return False
 
     def shutdown(self) -> None:
         """Shutdown the worker pool and release all resources.
@@ -973,6 +1010,10 @@ class CodeExecutionPool:
         if not self._started:
             self.start()
 
+        # Recover if pool was broken by previous execution
+        if self._broken:
+            self._recover_pool()
+
         if self._executor is None:
             return {
                 "passed": 0,
@@ -995,6 +1036,16 @@ class CodeExecutionPool:
                 "test_results": [],
             }
         except concurrent.futures.BrokenExecutor as e:
+            # Mark pool as broken and attempt recovery
+            self._broken = True
+            if self._recover_pool():
+                # Retry once after recovery
+                try:
+                    future = self._executor.submit(_pool_worker_execute, code, tests, timeout)
+                    result = future.result(timeout=timeout * len(tests) + 30)
+                    return result
+                except Exception:
+                    pass  # Fall through to error return
             return {
                 "passed": 0,
                 "total": len(tests),
@@ -1027,6 +1078,10 @@ class CodeExecutionPool:
         """
         if not self._started:
             self.start()
+
+        # Recover if pool was broken by previous execution
+        if self._broken:
+            self._recover_pool()
 
         if self._executor is None or not items:
             return [
@@ -1063,6 +1118,8 @@ class CodeExecutionPool:
                     }
                 )
             except concurrent.futures.BrokenExecutor as e:
+                # Mark pool as broken - remaining futures will also fail
+                self._broken = True
                 results.append(
                     {
                         "passed": 0,
@@ -1072,6 +1129,8 @@ class CodeExecutionPool:
                         "test_results": [],
                     }
                 )
+                # Try to recover for next batch
+                self._recover_pool()
             except Exception as e:
                 results.append(
                     {
