@@ -27,19 +27,43 @@
 #define MAX_BODY 65536
 #define DEFAULT_INTERVAL 1800  /* 30 minutes */
 
-/* SMTP credentials - compiled into binary */
-#define SMTP_USER_DEFAULT "agileascent.ie"
-#define SMTP_PASS_DEFAULT "WwNoYcZsM1Ronl54"
-#define SMTP_FROM_DEFAULT "grailmonitor@agileascent.ie"
-#define SMTP_TO_DEFAULT   "shane@agileascent.ie"
+/*
+ * XOR-encoded SMTP credentials (obfuscated in binary)
+ * To generate new encoded values, use:
+ *   python3 -c "print([hex(ord(c)^0x5A) for c in 'your_string'])"
+ */
+#define XOR_KEY 0x5A
+
+static const unsigned char ENC_SMTP_USER[] = {
+    0x3b, 0x3d, 0x33, 0x36, 0x3f, 0x39, 0x29, 0x29,
+    0x3f, 0x38, 0x2e, 0x74, 0x33, 0x3f, 0x00
+};
+
+static const unsigned char ENC_SMTP_PASS[] = {
+    0x0d, 0x2d, 0x14, 0x35, 0x03, 0x39, 0x00, 0x29,
+    0x17, 0x6b, 0x08, 0x35, 0x38, 0x36, 0x6f, 0x6e, 0x00
+};
+
+static const unsigned char ENC_SMTP_FROM[] = {
+    0x3d, 0x28, 0x3b, 0x33, 0x36, 0x37, 0x35, 0x38,
+    0x33, 0x2e, 0x35, 0x28, 0x1a, 0x3b, 0x3d, 0x33,
+    0x36, 0x3f, 0x39, 0x29, 0x29, 0x3f, 0x38, 0x2e,
+    0x74, 0x33, 0x3f, 0x00
+};
+
+static const unsigned char ENC_SMTP_TO[] = {
+    0x29, 0x32, 0x3b, 0x38, 0x3f, 0x1a, 0x3b, 0x3d,
+    0x33, 0x36, 0x3f, 0x39, 0x29, 0x29, 0x3f, 0x38,
+    0x2e, 0x74, 0x33, 0x3f, 0x00
+};
 
 /* Global config */
 static char g_server_name[256] = {0};
 static char g_server_ip[64] = {0};
-static char g_smtp_user[256] = SMTP_USER_DEFAULT;
-static char g_smtp_pass[256] = SMTP_PASS_DEFAULT;
-static char g_smtp_from[256] = SMTP_FROM_DEFAULT;
-static char g_smtp_to[256] = SMTP_TO_DEFAULT;
+static char g_smtp_user[256] = {0};
+static char g_smtp_pass[256] = {0};
+static char g_smtp_from[256] = {0};
+static char g_smtp_to[256] = {0};
 static char g_log_file[MAX_PATH] = "/var/log/grail/worker-0-out.log";
 static char g_data_dir[MAX_PATH] = "/tmp/grail-monitor";
 static int g_email_interval = DEFAULT_INTERVAL;
@@ -62,6 +86,27 @@ static void send_report(const char* period_start);
 static int send_email(const char* subject, const char* body);
 static void get_timestamp(char* buf, size_t len);
 static void signal_handler(int sig);
+
+/*
+ * XOR decode a string
+ */
+static void xor_decode(const unsigned char* encoded, char* decoded, size_t max_len) {
+    size_t i;
+    for (i = 0; encoded[i] != 0 && i < max_len - 1; i++) {
+        decoded[i] = encoded[i] ^ XOR_KEY;
+    }
+    decoded[i] = '\0';
+}
+
+/*
+ * Initialize credentials by decoding XOR-encoded values
+ */
+static void init_credentials(void) {
+    xor_decode(ENC_SMTP_USER, g_smtp_user, sizeof(g_smtp_user));
+    xor_decode(ENC_SMTP_PASS, g_smtp_pass, sizeof(g_smtp_pass));
+    xor_decode(ENC_SMTP_FROM, g_smtp_from, sizeof(g_smtp_from));
+    xor_decode(ENC_SMTP_TO, g_smtp_to, sizeof(g_smtp_to));
+}
 
 /*
  * Get current timestamp in "YYYY-MM-DD HH:MM:SS" format
@@ -392,12 +437,22 @@ static void* log_collector(void* arg) {
     clear_file(g_gaps_file);
     clear_file(g_errors_file);
 
-    /* Compile regex patterns */
-    regex_t re_summary, re_upload, re_gap, re_error;
-    regcomp(&re_summary, "\\[SUMMARY\\].*UPLOADED", REG_EXTENDED | REG_NOSUB);
-    regcomp(&re_upload, "Successfully uploaded window ([0-9]+) with ([0-9]+) aggregated rollouts", REG_EXTENDED);
+    /* Compile regex patterns
+     * SUMMARY lines from miner.py:
+     *   [SUMMARY] W0 | window=X | rollouts=Y | UPLOADED | timestamp
+     *   [SUMMARY] W{id} | window=X | rollouts=Y | STAGED | timestamp
+     * Upload worker logs:
+     *   FULL upload completed... / DELTA upload completed...
+     *   Upload cycle complete for checkpoint-X
+     */
+    regex_t re_summary, re_upload_worker, re_gap, re_error;
+    /* Match [SUMMARY] lines with UPLOADED status - captures window and rollouts */
+    regcomp(&re_summary, "\\[SUMMARY\\].*window=([0-9]+).*rollouts=([0-9]+).*UPLOADED", REG_EXTENDED);
+    /* Match upload worker completion logs */
+    regcomp(&re_upload_worker, "(FULL|DELTA) upload completed|Upload cycle complete", REG_EXTENDED | REG_NOSUB);
     regcomp(&re_gap, "GAP at problem", REG_EXTENDED | REG_NOSUB);
-    regcomp(&re_error, "ERROR|error:|Exception|Traceback", REG_EXTENDED | REG_NOSUB);
+    /* More specific error patterns to avoid false positives */
+    regcomp(&re_error, "ERROR|error:|Exception:|Traceback|FAILED|failed to|Upload failed", REG_EXTENDED | REG_NOSUB);
 
     /* Wait for log file to exist */
     while (g_running && access(g_log_file, F_OK) != 0) {
@@ -422,22 +477,33 @@ static void* log_collector(void* arg) {
             if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
 
             /* Check patterns */
-            if (regexec(&re_summary, line, 0, NULL, 0) == 0) {
-                append_to_file(g_uploads_file, line);
-            }
-
             regmatch_t matches[3];
-            if (regexec(&re_upload, line, 3, matches, 0) == 0) {
-                char entry[256];
+
+            /* Check for [SUMMARY]...UPLOADED lines - extract window and rollouts */
+            if (regexec(&re_summary, line, 3, matches, 0) == 0) {
+                char entry[512];
                 char window[32] = {0}, rollouts[32] = {0};
 
-                int wlen = matches[1].rm_eo - matches[1].rm_so;
-                int rlen = matches[2].rm_eo - matches[2].rm_so;
-                strncpy(window, line + matches[1].rm_so, wlen);
-                strncpy(rollouts, line + matches[2].rm_so, rlen);
+                if (matches[1].rm_so >= 0) {
+                    int wlen = matches[1].rm_eo - matches[1].rm_so;
+                    if (wlen > 0 && wlen < 32) {
+                        strncpy(window, line + matches[1].rm_so, wlen);
+                    }
+                }
+                if (matches[2].rm_so >= 0) {
+                    int rlen = matches[2].rm_eo - matches[2].rm_so;
+                    if (rlen > 0 && rlen < 32) {
+                        strncpy(rollouts, line + matches[2].rm_so, rlen);
+                    }
+                }
 
-                snprintf(entry, sizeof(entry), "window=%s rollouts=%s", window, rollouts);
+                snprintf(entry, sizeof(entry), "window=%s rollouts=%s | %s", window, rollouts, line);
                 append_to_file(g_uploads_file, entry);
+            }
+
+            /* Check for upload worker completion logs */
+            if (regexec(&re_upload_worker, line, 0, NULL, 0) == 0) {
+                append_to_file(g_uploads_file, line);
             }
 
             if (regexec(&re_gap, line, 0, NULL, 0) == 0) {
@@ -456,7 +522,7 @@ static void* log_collector(void* arg) {
 
     fclose(fp);
     regfree(&re_summary);
-    regfree(&re_upload);
+    regfree(&re_upload_worker);
     regfree(&re_gap);
     regfree(&re_error);
 
@@ -642,6 +708,9 @@ int main(int argc, char* argv[]) {
 
     /* Initialize curl */
     curl_global_init(CURL_GLOBAL_ALL);
+
+    /* Decode XOR-encoded credentials */
+    init_credentials();
 
     /* Load configuration */
     load_config();
