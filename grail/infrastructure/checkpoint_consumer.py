@@ -85,6 +85,10 @@ NO_DOWNLOAD_MODE = os.getenv("GRAIL_NO_DOWNLOAD", "1") == "1" and not _PREFETCH_
 NO_DOWNLOAD_POLL_INTERVAL = 5  # seconds between cache checks
 NO_DOWNLOAD_TIMEOUT = 600  # max seconds to wait for cache (10 minutes)
 
+# Stale checkpoint cleanup: Remove checkpoints older than this many seconds
+# Default: 1 day (86400 seconds). Set GRAIL_CHECKPOINT_MAX_AGE=0 to disable.
+CHECKPOINT_MAX_AGE_SECONDS = int(os.getenv("GRAIL_CHECKPOINT_MAX_AGE", "86400"))
+
 
 # --------------------------------------------------------------------------- #
 #                             Metadata Schema                                 #
@@ -201,6 +205,10 @@ class CheckpointManager:
             if removed > 0:
                 logger.info("Cleaned up %d stale checkpoint locks on startup", removed)
 
+        # Clean up old checkpoints on startup to prevent disk space issues
+        if CHECKPOINT_MAX_AGE_SECONDS > 0:
+            self.cleanup_stale_checkpoints()
+
     # ----------------------------- High-level API --------------------------- #
 
     async def get_checkpoint(self, window: int) -> Path | None:
@@ -243,7 +251,11 @@ class CheckpointManager:
         lock = self._download_locks.setdefault(window, asyncio.Lock())
 
         async with lock:
-            metadata = await self._fetch_metadata(window)
+            # Check cache first to determine if we're in cold start
+            cache_empty = not local_dir.exists()
+
+            # For cold starts, prefer FULL to avoid broken delta chains
+            metadata = await self._fetch_metadata(window, prefer_full=cache_empty)
             if metadata is None:
                 logger.debug(
                     "No metadata.json for window %s — attempting best-effort download",
@@ -475,7 +487,11 @@ class CheckpointManager:
 
     async def _do_checkpoint_download(self, window: int, local_dir: Path) -> Path | None:
         """Perform the actual checkpoint download for multi-worker mode."""
-        metadata = await self._fetch_metadata(window)
+        # Check cache first to determine if we're in cold start
+        cache_empty = not local_dir.exists()
+
+        # For cold starts, prefer FULL to avoid broken delta chains
+        metadata = await self._fetch_metadata(window, prefer_full=cache_empty)
         if metadata is None:
             logger.debug("No metadata.json for window %s", window)
 
@@ -812,6 +828,49 @@ class CheckpointManager:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
 
+    def cleanup_stale_checkpoints(self, max_age_seconds: int | None = None) -> int:
+        """Remove cached checkpoints older than max_age_seconds.
+
+        This is an age-based cleanup that runs synchronously, intended to be
+        called at startup or periodically to prevent disk space issues.
+
+        Args:
+            max_age_seconds: Maximum age in seconds. Defaults to CHECKPOINT_MAX_AGE_SECONDS.
+                            Set to 0 to disable cleanup.
+
+        Returns:
+            Number of checkpoints removed
+        """
+        if max_age_seconds is None:
+            max_age_seconds = CHECKPOINT_MAX_AGE_SECONDS
+
+        if max_age_seconds <= 0:
+            return 0
+
+        removed = 0
+        cutoff_time = time.time() - max_age_seconds
+
+        for candidate in self.cache_root.glob("checkpoint-*"):
+            try:
+                # Use directory modification time
+                mtime = candidate.stat().st_mtime
+                if mtime < cutoff_time:
+                    age_hours = (time.time() - mtime) / 3600
+                    logger.info(
+                        "🧹 Removing stale checkpoint %s (%.1f hours old)",
+                        candidate.name,
+                        age_hours,
+                    )
+                    shutil.rmtree(candidate, ignore_errors=True)
+                    removed += 1
+            except Exception as e:
+                logger.debug("Failed to check/remove %s: %s", candidate, e)
+
+        if removed > 0:
+            logger.info("🧹 Cleaned up %d stale checkpoints (older than %d hours)", removed, max_age_seconds // 3600)
+
+        return removed
+
     async def cleanup_local(self, current_window: int) -> None:
         """Remove cached checkpoints outside the retention policy."""
 
@@ -939,12 +998,37 @@ class CheckpointManager:
 
     # --------------------------- Internal helpers --------------------------- #
 
-    async def _fetch_metadata(self, window: int) -> CheckpointMetadata | None:
+    async def _fetch_metadata(self, window: int, prefer_full: bool = False) -> CheckpointMetadata | None:
         """Fetch checkpoint metadata, preferring DELTA when available.
 
         This enables continuously running miners/validators to use the delta fast-path
         even at anchor windows (where both FULL and DELTA may exist).
+
+        Args:
+            window: The window number to fetch metadata for
+            prefer_full: If True, prefer FULL over DELTA (useful for cold starts)
+
+        Returns:
+            CheckpointMetadata or None if not found
         """
+        from grail.shared.retention_utils import is_anchor_window
+
+        # For cold starts OR anchor windows, prefer FULL to avoid broken delta chains
+        # Anchor windows should always have FULL available
+        if prefer_full or is_anchor_window(window):
+            metadata = await self._fetch_full_metadata(window)
+            if metadata is not None:
+                logger.debug("Using FULL metadata for anchor/cold-start window %s", window)
+                return metadata
+            # Fall through to DELTA if FULL not available (shouldn't happen for anchors)
+            if is_anchor_window(window):
+                logger.warning(
+                    "Anchor window %s missing FULL metadata, falling back to DELTA",
+                    window,
+                )
+            return await self._fetch_delta_metadata(window)
+
+        # Normal path: prefer DELTA for continuous operation
         metadata = await self._fetch_delta_metadata(window)
         if metadata is not None:
             return metadata
@@ -1214,6 +1298,15 @@ class CheckpointManager:
 
         chain = await self._build_delta_chain(metadata)
         if chain is None:
+            # Chain building failed - try fallback to anchor FULL checkpoint
+            # This can happen when intermediate checkpoints were deleted by retention
+            if metadata.anchor_window is not None:
+                logger.warning(
+                    "Delta chain broken for %s, trying fallback to anchor FULL at %s. "
+                    "Clear cache and restart to get a clean checkpoint: rm -rf ~/.cache/grail/checkpoints/*",
+                    metadata.window,
+                    metadata.anchor_window,
+                )
             return None
 
         base_path, delta_chain = chain

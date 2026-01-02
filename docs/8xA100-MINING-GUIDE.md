@@ -828,7 +828,39 @@ pm2 restart all
 
 > **Note:** As of the latest version, stale locks (>60s old) are automatically cleaned up on worker startup. If you still see this issue, update to the latest code.
 
-**4. Slow Upload Speed**
+**4. Disk Space Issues / Checkpoint Validation Failures**
+
+If your server runs out of disk space, you may see:
+- `reward_valid` check failures (rewards don't match)
+- zstd decompression errors
+- Checkpoint download failures
+- Test execution failures (Python env can't write temp files)
+
+**Automatic cleanup:** By default, checkpoints older than 24 hours are automatically cleaned at startup via `GRAIL_CHECKPOINT_MAX_AGE=86400`.
+
+**Manual cleanup:**
+```bash
+# Check disk usage
+df -h /ephemeral  # or your checkpoint directory
+
+# See checkpoint sizes
+du -sh ~/.cache/grail/checkpoints/*
+
+# Remove checkpoints older than 1 day
+find ~/.cache/grail/checkpoints -type d -name "checkpoint-*" -mtime +1 -exec rm -rf {} +
+
+# Or keep only the 3 most recent
+cd ~/.cache/grail/checkpoints && ls -dt checkpoint-* | tail -n +4 | xargs rm -rf
+```
+
+**Tune cleanup age:**
+```bash
+# In ecosystem.config.js or .env:
+GRAIL_CHECKPOINT_MAX_AGE=43200  # 12 hours (more aggressive)
+GRAIL_CHECKPOINT_MAX_AGE=0     # Disable auto-cleanup
+```
+
+**5. Slow Upload Speed**
 ```bash
 # Adjust bandwidth estimate
 GRAIL_UPLOAD_BANDWIDTH_MBPS=500  # Tune based on actual speed
@@ -837,7 +869,7 @@ GRAIL_UPLOAD_BANDWIDTH_MBPS=500  # Tune based on actual speed
 curl -o /dev/null -w "%{speed_upload}\n" --data-binary @/path/to/testfile https://httpbin.org/post
 ```
 
-**5. Flash Attention Not Working**
+**6. Flash Attention Not Working**
 ```bash
 # Reinstall - builds from source (takes 10-15 min)
 uv pip uninstall flash-attn
@@ -849,7 +881,7 @@ python -c "import flash_attn; print(flash_attn.__version__)"
 # If it still fails, skip it - mining works without flash-attn (just slower)
 ```
 
-**6. Duplicate Nonce Error After PM2 Restart**
+**7. Duplicate Nonce Error After PM2 Restart**
 
 If you see validation failures with "Duplicate nonce" after restarting PM2:
 
@@ -877,7 +909,7 @@ pm2 start all
 
 **Prevention:** The barrier system now includes automatic cleanup on leader startup, so this should not occur with current code.
 
-**7. Gap Truncation (Rollouts Discarded) - Rare with Current Code**
+**8. Gap Truncation (Rollouts Discarded) - Rare with Current Code**
 
 If you see logs like:
 ```
@@ -903,7 +935,7 @@ If you see logs like:
 3. Check Redis connectivity: `redis-cli -h HUB_IP ping`
 4. Verify the problem queue directory exists: `ls -la ~/.cache/grail/.problem-queue/`
 
-**8. Duplicate Nonce Error with Batch Size > 10 (Formula Collision)**
+**9. Duplicate Nonce Error with Batch Size > 10 (Formula Collision)**
 
 If you see validation failures with "Duplicate nonce" even with fresh staging files:
 
@@ -1895,6 +1927,7 @@ Expected:
 | `GRAIL_PREFETCH_MODE` | Optional | Run in checkpoint prefetch mode (no GPU, continuous download) | `1` |
 | `GRAIL_PREFETCH_INTERVAL` | Optional | Seconds between prefetch checks (default: 30) | `30` |
 | `GRAIL_NO_DOWNLOAD` | Optional | Miners wait for prefetch instead of downloading (default: 1) | `1` |
+| `GRAIL_CHECKPOINT_MAX_AGE` | Optional | Max age in seconds for cached checkpoints (default: 86400 = 1 day). Set to 0 to disable cleanup. | `86400` |
 
 **Note on `GRAIL_NODE_ID`:** You only need to set this on **Worker 0** of each node. Worker 0 stores the node_id in Redis at key `grail:config:node_id`, and Workers 1-7 automatically read it from Redis. This ensures all workers on the same node use a consistent identifier for problem claiming and rollout tracking.
 
