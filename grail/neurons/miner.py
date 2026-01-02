@@ -42,6 +42,8 @@ _PREFETCH_INTERVAL = int(os.getenv("GRAIL_PREFETCH_INTERVAL", "30"))  # Check ev
 # Prefetch FULL checkpoints only (for cold start optimization across workers)
 # Default "0" = prefetch ALL checkpoints (FULL + DELTA) to keep cache warm
 _PREFETCH_FULL_ONLY = os.getenv("GRAIL_PREFETCH_FULL_ONLY", "0").lower() in ("1", "true", "yes")
+# Periodic cleanup interval in prefetch mode (default 6 hours)
+_PREFETCH_CLEANUP_INTERVAL = int(os.getenv("GRAIL_PREFETCH_CLEANUP_INTERVAL", "21600"))
 
 if _ENABLE_PRECISION_TUNING:
     # Disable TF32 - uses 19-bit precision instead of 23-bit, causes drift
@@ -490,10 +492,12 @@ class MinerNeuron(BaseNeuron):
             if _PREFETCH_MODE:
                 logger.info("🔄 Prefetch mode: continuously watching for new checkpoints...")
                 logger.info(f"🔄 Check interval: {_PREFETCH_INTERVAL}s (set GRAIL_PREFETCH_INTERVAL to change)")
+                logger.info(f"🔄 Cleanup interval: {_PREFETCH_CLEANUP_INTERVAL // 3600}h (set GRAIL_PREFETCH_CLEANUP_INTERVAL to change)")
                 if _PREFETCH_FULL_ONLY:
                     logger.info("🔄 FULL-only mode: will only prefetch FULL checkpoints (cold start optimized)")
 
                 last_downloaded_window: int | None = None
+                last_cleanup_time: float = time.time()
 
                 while not self.stop_event.is_set():
                     try:
@@ -531,6 +535,14 @@ class MinerNeuron(BaseNeuron):
                                 last_downloaded_window = checkpoint_window
                             else:
                                 logger.warning(f"⚠️ Failed to download checkpoint {checkpoint_window}")
+
+                        # Periodic cleanup of old checkpoints
+                        if time.time() - last_cleanup_time >= _PREFETCH_CLEANUP_INTERVAL:
+                            logger.info("🧹 Running periodic checkpoint cleanup...")
+                            removed = checkpoint_manager.cleanup_stale_checkpoints()
+                            if removed > 0:
+                                logger.info(f"🧹 Periodic cleanup removed {removed} stale checkpoints")
+                            last_cleanup_time = time.time()
 
                         # Wait before checking again
                         await asyncio.sleep(_PREFETCH_INTERVAL)
