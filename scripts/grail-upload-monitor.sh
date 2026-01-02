@@ -28,6 +28,55 @@ ERRORS_FILE="$DATA_DIR/errors.log"
 mkdir -p "$DATA_DIR"
 
 ################################################################################
+# Dependency checks
+################################################################################
+check_dependencies() {
+  local errors=0
+
+  # Check Python 3
+  if ! command -v python3 &>/dev/null; then
+    echo "[ERROR] python3 is not installed. Install with: apt install python3"
+    errors=$((errors + 1))
+  else
+    # Check Python SMTP modules (standard library, but verify)
+    if ! python3 -c "import smtplib, email.mime.text, email.mime.multipart" 2>/dev/null; then
+      echo "[ERROR] Python email modules not available"
+      errors=$((errors + 1))
+    fi
+  fi
+
+  # Check tail command
+  if ! command -v tail &>/dev/null; then
+    echo "[ERROR] tail command not found"
+    errors=$((errors + 1))
+  fi
+
+  # Check log file exists
+  if [[ ! -f "$LOG_FILE" ]]; then
+    echo "[WARNING] Log file does not exist yet: $LOG_FILE"
+    echo "[WARNING] Monitor will wait for it to be created..."
+  fi
+
+  # Check SMTP connectivity (optional, just a warning)
+  if command -v nc &>/dev/null; then
+    if ! nc -z -w 5 mail.smtp2go.com 2525 2>/dev/null; then
+      echo "[WARNING] Cannot reach SMTP server mail.smtp2go.com:2525"
+      echo "[WARNING] Emails may fail to send. Check network/firewall."
+    fi
+  fi
+
+  if [[ $errors -gt 0 ]]; then
+    echo "[FATAL] $errors dependency error(s) found. Exiting."
+    exit 1
+  fi
+
+  echo "[$(date +'%F %T')] All dependencies OK"
+}
+
+# Run dependency checks
+check_dependencies
+
+################################################################################
 # Helper: e-mail sender
 ################################################################################
 send_email() {
