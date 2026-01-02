@@ -20,11 +20,20 @@ SERVER_NAME="${GRAIL_SERVER_NAME:-$(get_node_id)}"
 SERVER_IP="${GRAIL_SERVER_IP:-$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')}"
 EMAIL_INTERVAL="${GRAIL_EMAIL_INTERVAL:-1800}"  # 30 minutes in seconds
 
-# SMTP settings (smtp2go)
-SMTP_USER="${GRAIL_SMTP_USER:-agileascent.ie}"
-SMTP_PASS="${GRAIL_SMTP_PASS:-WwNoYcZsM1Ronl54}"
-SMTP_FROM="${GRAIL_SMTP_FROM:-grailmonitor@agileascent.ie}"
-SMTP_TO="${GRAIL_SMTP_TO:-shane@agileascent.ie}"
+# SMTP settings - load from config file or environment variables
+# Config file location (create this file with your credentials)
+SMTP_CONFIG="${GRAIL_SMTP_CONFIG:-/root/.grail-smtp.conf}"
+
+# Load config file if it exists
+if [[ -f "$SMTP_CONFIG" ]]; then
+  source "$SMTP_CONFIG"
+fi
+
+# These must be set via environment or config file
+SMTP_USER="${GRAIL_SMTP_USER:-}"
+SMTP_PASS="${GRAIL_SMTP_PASS:-}"
+SMTP_FROM="${GRAIL_SMTP_FROM:-}"
+SMTP_TO="${GRAIL_SMTP_TO:-}"
 
 ########## paths ##########
 LOG_FILE="${GRAIL_LOG_FILE:-/var/log/grail/worker-0-out.log}"
@@ -41,6 +50,18 @@ mkdir -p "$DATA_DIR"
 ################################################################################
 check_dependencies() {
   local errors=0
+
+  # Check SMTP credentials are configured
+  if [[ -z "$SMTP_USER" || -z "$SMTP_PASS" || -z "$SMTP_FROM" || -z "$SMTP_TO" ]]; then
+    echo "[ERROR] SMTP credentials not configured."
+    echo "[ERROR] Create $SMTP_CONFIG with:"
+    echo "        GRAIL_SMTP_USER='your_smtp_user'"
+    echo "        GRAIL_SMTP_PASS='your_smtp_password'"
+    echo "        GRAIL_SMTP_FROM='sender@example.com'"
+    echo "        GRAIL_SMTP_TO='recipient@example.com'"
+    echo "[ERROR] Then: chmod 600 $SMTP_CONFIG"
+    errors=$((errors + 1))
+  fi
 
   # Check Python 3
   if ! command -v python3 &>/dev/null; then
