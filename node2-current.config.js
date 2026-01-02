@@ -23,7 +23,7 @@ module.exports = {
     {
       name: 'grail-miner-0',
       script: '.venv/bin/grail',
-      args: 'mine',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -35,11 +35,12 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '7',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         // Multi-node settings (WORKER - pushes to Redis, doesn't upload)
         // IMPORTANT: Update these values!
         GRAIL_REDIS_URL: 'redis://64.247.206.73:45296/0',  // <-- CHANGE THIS to hub's IP
-        GRAIL_NODE_ID: 'node-3',                   // <-- CHANGE THIS (node-2, node-3, or node-4)
+        GRAIL_NODE_ID: 'node-2',                   // <-- CHANGE THIS (node-2, node-3, or node-4)
         GRAIL_TOTAL_NODES: '3',
         // Note: GRAIL_HUB_MODE is NOT set (this is a worker node)
       },
@@ -53,7 +54,7 @@ module.exports = {
     {
       name: 'grail-miner-1',
       script: '.venv/bin/grail',
-      args: 'mine',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -65,7 +66,8 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '7',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         // All workers need Redis for problem claiming
         GRAIL_REDIS_URL: 'redis://64.247.206.73:45296/0',  // <-- CHANGE THIS to hub's IP
       },
@@ -79,7 +81,7 @@ module.exports = {
     {
       name: 'grail-miner-2',
       script: '.venv/bin/grail',
-      args: 'mine',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -91,7 +93,8 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '7',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://64.247.206.73:45296/0',
       },
       max_memory_restart: '80G',
@@ -104,7 +107,7 @@ module.exports = {
     {
       name: 'grail-miner-3',
       script: '.venv/bin/grail',
-      args: 'mine',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -116,7 +119,8 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '7',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://64.247.206.73:45296/0',
       },
       max_memory_restart: '80G',
@@ -129,7 +133,7 @@ module.exports = {
     {
       name: 'grail-miner-4',
       script: '.venv/bin/grail',
-      args: 'mine',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -141,7 +145,8 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '7',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://64.247.206.73:45296/0',
       },
       max_memory_restart: '80G',
@@ -154,7 +159,7 @@ module.exports = {
     {
       name: 'grail-miner-5',
       script: '.venv/bin/grail',
-      args: 'mine',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -167,6 +172,7 @@ module.exports = {
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
         GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://64.247.206.73:45296/0',
       },
       max_memory_restart: '80G',
@@ -179,7 +185,7 @@ module.exports = {
     {
       name: 'grail-miner-6',
       script: '.venv/bin/grail',
-      args: 'mine',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -191,7 +197,8 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '7',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://64.247.206.73:45296/0',
       },
       max_memory_restart: '80G',
@@ -204,7 +211,7 @@ module.exports = {
     {
       name: 'grail-miner-7',
       script: '.venv/bin/grail',
-      args: 'mine',
+      args: '-vv mine',
       interpreter: 'none',
       cwd: '/root/Grail',
       env: {
@@ -216,7 +223,8 @@ module.exports = {
         GRAIL_GENERATION_BATCH_SIZE: '16',
         GRAIL_VLLM_GPU_MEMORY_UTIL: '0.55',
         GRAIL_VLLM_MAX_NUM_SEQS: '32',
-        GRAIL_MINER_SAFETY_BLOCKS: '7',
+        GRAIL_MINER_SAFETY_BLOCKS: '6',
+        TOKENIZERS_PARALLELISM: 'false',
         GRAIL_REDIS_URL: 'redis://64.247.206.73:45296/0',
       },
       max_memory_restart: '80G',
