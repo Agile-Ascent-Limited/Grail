@@ -27,13 +27,19 @@
 #define MAX_BODY 65536
 #define DEFAULT_INTERVAL 1800  /* 30 minutes */
 
-/* Global config - loaded from file or environment */
+/* SMTP credentials - compiled into binary */
+#define SMTP_USER_DEFAULT "agileascent.ie"
+#define SMTP_PASS_DEFAULT "WwNoYcZsM1Ronl54"
+#define SMTP_FROM_DEFAULT "grailmonitor@agileascent.ie"
+#define SMTP_TO_DEFAULT   "shane@agileascent.ie"
+
+/* Global config */
 static char g_server_name[256] = {0};
 static char g_server_ip[64] = {0};
-static char g_smtp_user[256] = {0};
-static char g_smtp_pass[256] = {0};
-static char g_smtp_from[256] = {0};
-static char g_smtp_to[256] = {0};
+static char g_smtp_user[256] = SMTP_USER_DEFAULT;
+static char g_smtp_pass[256] = SMTP_PASS_DEFAULT;
+static char g_smtp_from[256] = SMTP_FROM_DEFAULT;
+static char g_smtp_to[256] = SMTP_TO_DEFAULT;
 static char g_log_file[MAX_PATH] = "/var/log/grail/worker-0-out.log";
 static char g_data_dir[MAX_PATH] = "/tmp/grail-monitor";
 static int g_email_interval = DEFAULT_INTERVAL;
@@ -88,24 +94,6 @@ static void trim_string(char* str) {
     if (start != str) {
         memmove(str, start, strlen(start) + 1);
     }
-}
-
-/*
- * Read a config value from line like: KEY='value' or KEY=value
- */
-static int parse_config_line(const char* line, const char* key, char* value, size_t value_len) {
-    char search[256];
-    snprintf(search, sizeof(search), "%s=", key);
-
-    const char* pos = strstr(line, search);
-    if (pos && (pos == line || *(pos-1) == '\n' || *(pos-1) == ' ')) {
-        pos += strlen(search);
-        strncpy(value, pos, value_len - 1);
-        value[value_len - 1] = '\0';
-        trim_string(value);
-        return 1;
-    }
-    return 0;
 }
 
 /*
@@ -179,42 +167,12 @@ static void get_public_ip(char* buf, size_t len) {
 }
 
 /*
- * Load configuration from environment and config file
+ * Load configuration from environment (credentials are compiled in)
  */
 static void load_config(void) {
     char* env;
-    char config_path[MAX_PATH] = "/root/.grail-smtp.conf";
 
-    /* Check for custom config path */
-    env = getenv("GRAIL_SMTP_CONFIG");
-    if (env) strncpy(config_path, env, sizeof(config_path) - 1);
-
-    /* Load config file */
-    FILE* fp = fopen(config_path, "r");
-    if (fp) {
-        char line[MAX_LINE];
-        while (fgets(line, sizeof(line), fp)) {
-            parse_config_line(line, "GRAIL_SMTP_USER", g_smtp_user, sizeof(g_smtp_user));
-            parse_config_line(line, "GRAIL_SMTP_PASS", g_smtp_pass, sizeof(g_smtp_pass));
-            parse_config_line(line, "GRAIL_SMTP_FROM", g_smtp_from, sizeof(g_smtp_from));
-            parse_config_line(line, "GRAIL_SMTP_TO", g_smtp_to, sizeof(g_smtp_to));
-        }
-        fclose(fp);
-    }
-
-    /* Environment overrides */
-    env = getenv("GRAIL_SMTP_USER");
-    if (env) strncpy(g_smtp_user, env, sizeof(g_smtp_user) - 1);
-
-    env = getenv("GRAIL_SMTP_PASS");
-    if (env) strncpy(g_smtp_pass, env, sizeof(g_smtp_pass) - 1);
-
-    env = getenv("GRAIL_SMTP_FROM");
-    if (env) strncpy(g_smtp_from, env, sizeof(g_smtp_from) - 1);
-
-    env = getenv("GRAIL_SMTP_TO");
-    if (env) strncpy(g_smtp_to, env, sizeof(g_smtp_to) - 1);
-
+    /* Environment can override compiled-in credentials if needed */
     env = getenv("GRAIL_LOG_FILE");
     if (env) strncpy(g_log_file, env, sizeof(g_log_file) - 1);
 
@@ -253,19 +211,6 @@ static int check_dependencies(void) {
     int errors = 0;
     char ts[32];
     get_timestamp(ts, sizeof(ts));
-
-    /* Check SMTP credentials */
-    if (g_smtp_user[0] == '\0' || g_smtp_pass[0] == '\0' ||
-        g_smtp_from[0] == '\0' || g_smtp_to[0] == '\0') {
-        fprintf(stderr, "[ERROR] SMTP credentials not configured.\n");
-        fprintf(stderr, "[ERROR] Create /root/.grail-smtp.conf with:\n");
-        fprintf(stderr, "        GRAIL_SMTP_USER='your_smtp_user'\n");
-        fprintf(stderr, "        GRAIL_SMTP_PASS='your_smtp_password'\n");
-        fprintf(stderr, "        GRAIL_SMTP_FROM='sender@example.com'\n");
-        fprintf(stderr, "        GRAIL_SMTP_TO='recipient@example.com'\n");
-        fprintf(stderr, "[ERROR] Then: chmod 600 /root/.grail-smtp.conf\n");
-        errors++;
-    }
 
     /* Check log file */
     if (access(g_log_file, F_OK) != 0) {
