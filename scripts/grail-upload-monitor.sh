@@ -7,8 +7,17 @@
 # ------------------------------------------------------------------------------
 
 #### Configuration (set these or use environment variables) ####
-SERVER_NAME="${GRAIL_SERVER_NAME:-$(hostname)}"
-SERVER_IP="${GRAIL_SERVER_IP:-$(hostname -I | awk '{print $1}')}"
+# Try to get node ID from Grail config, fall back to hostname
+get_node_id() {
+  local config_file="/root/Grail/current.config.js"
+  if [[ -f "$config_file" ]]; then
+    grep -oP "GRAIL_NODE_ID:\s*['\"]\\K[^'\"]+(?=['\"])" "$config_file" 2>/dev/null || hostname
+  else
+    hostname
+  fi
+}
+SERVER_NAME="${GRAIL_SERVER_NAME:-$(get_node_id)}"
+SERVER_IP="${GRAIL_SERVER_IP:-$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')}"
 EMAIL_INTERVAL="${GRAIL_EMAIL_INTERVAL:-1800}"  # 30 minutes in seconds
 
 # SMTP settings (smtp2go)
@@ -239,7 +248,16 @@ send_report() {
   fi
 
   # Build report
-  local subject="[GRAIL $SERVER_NAME] Upload Report: $upload_count uploads, $total_rollouts rollouts"
+  local subject
+  local status_line
+  if [[ $upload_count -eq 0 && $gap_count -eq 0 && $error_count -eq 0 ]]; then
+    subject="[GRAIL $SERVER_NAME] ⚠️ NO ACTIVITY in last $((EMAIL_INTERVAL/60)) minutes"
+    status_line="⚠️ WARNING: No uploads, gaps, or errors detected in this period.
+This could indicate the miner is not running or logs are not being written."
+  else
+    subject="[GRAIL $SERVER_NAME] Upload Report: $upload_count uploads, $total_rollouts rollouts"
+    status_line=""
+  fi
 
   local body
   body=$(cat <<EOF
@@ -247,6 +265,7 @@ GRAIL Upload Monitor Report
 ============================
 Server: $SERVER_NAME ($SERVER_IP)
 Period: $period_start - $period_end
+$status_line
 
 SUMMARY
 -------
