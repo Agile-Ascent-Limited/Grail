@@ -87,7 +87,9 @@ IS_LEADER_WORKER = WORKER_ID == 0
 _PREFETCH_MODE = os.getenv("GRAIL_PREFETCH_MODE", "0").lower() in ("1", "true", "yes")
 NO_DOWNLOAD_MODE = os.getenv("GRAIL_NO_DOWNLOAD", "1") == "1" and not _PREFETCH_MODE
 NO_DOWNLOAD_POLL_INTERVAL = 5  # seconds between cache checks
-NO_DOWNLOAD_TIMEOUT = 600  # max seconds to wait for cache (10 minutes)
+# Wait forever (0) or configurable timeout for prefetch to provide checkpoint
+# Default 0 = wait indefinitely (prefetch should always provide checkpoints)
+NO_DOWNLOAD_TIMEOUT = int(os.getenv("GRAIL_NO_DOWNLOAD_TIMEOUT", "0"))
 
 # Stale checkpoint cleanup: Remove checkpoints older than this many seconds
 # Default: 1 day (86400 seconds). Set GRAIL_CHECKPOINT_MAX_AGE=0 to disable.
@@ -196,11 +198,12 @@ class CheckpointManager:
             logger.info("Cache verification DISABLED (GRAIL_SKIP_CACHE_VERIFICATION=1) - trusting cached files")
 
         if NO_DOWNLOAD_MODE:
+            timeout_str = "indefinitely" if NO_DOWNLOAD_TIMEOUT == 0 else f"{NO_DOWNLOAD_TIMEOUT}s"
             logger.info(
                 "🔄 NO_DOWNLOAD mode ENABLED - miners will wait for prefetch to cache checkpoints "
-                "(poll=%ds, timeout=%ds)",
+                "(poll=%ds, wait=%s)",
                 NO_DOWNLOAD_POLL_INTERVAL,
-                NO_DOWNLOAD_TIMEOUT,
+                timeout_str,
             )
 
         if PREFER_FULL_CHECKPOINTS:
@@ -285,13 +288,15 @@ class CheckpointManager:
 
             # NO_DOWNLOAD_MODE: Wait for prefetch to populate cache instead of downloading
             if NO_DOWNLOAD_MODE:
+                timeout_str = "indefinitely" if NO_DOWNLOAD_TIMEOUT == 0 else f"timeout={NO_DOWNLOAD_TIMEOUT}s"
                 logger.info(
-                    "🔄 NO_DOWNLOAD mode: waiting for prefetch to cache checkpoint %s (timeout=%ds)",
+                    "🔄 NO_DOWNLOAD mode: waiting for prefetch to cache checkpoint %s (%s)",
                     window,
-                    NO_DOWNLOAD_TIMEOUT,
+                    timeout_str,
                 )
                 start_time = time.time()
-                while time.time() - start_time < NO_DOWNLOAD_TIMEOUT:
+                last_log_time = start_time
+                while NO_DOWNLOAD_TIMEOUT == 0 or (time.time() - start_time < NO_DOWNLOAD_TIMEOUT):
                     if local_dir.exists():
                         try:
                             manifest = await self._load_manifest(local_dir)
@@ -305,6 +310,15 @@ class CheckpointManager:
                                 return local_dir
                         except Exception as exc:
                             logger.debug("Cache check failed: %s", exc)
+                    # Log progress every 60 seconds when waiting indefinitely
+                    elapsed = time.time() - start_time
+                    if elapsed - (last_log_time - start_time) >= 60:
+                        logger.info(
+                            "⏳ Still waiting for prefetch to cache checkpoint %s (%.0fs elapsed)...",
+                            window,
+                            elapsed,
+                        )
+                        last_log_time = time.time()
                     await asyncio.sleep(NO_DOWNLOAD_POLL_INTERVAL)
 
                 logger.warning(
@@ -458,13 +472,15 @@ class CheckpointManager:
 
             # NO_DOWNLOAD_MODE: Wait for prefetch to populate cache instead of downloading
             if NO_DOWNLOAD_MODE:
+                timeout_str = "indefinitely" if NO_DOWNLOAD_TIMEOUT == 0 else f"timeout={NO_DOWNLOAD_TIMEOUT}s"
                 logger.info(
-                    "🔄 NO_DOWNLOAD mode: waiting for prefetch to cache checkpoint %s (timeout=%ds)",
+                    "🔄 NO_DOWNLOAD mode: waiting for prefetch to cache checkpoint %s (%s)",
                     window,
-                    NO_DOWNLOAD_TIMEOUT,
+                    timeout_str,
                 )
                 start_time = time.time()
-                while time.time() - start_time < NO_DOWNLOAD_TIMEOUT:
+                last_log_time = start_time
+                while NO_DOWNLOAD_TIMEOUT == 0 or (time.time() - start_time < NO_DOWNLOAD_TIMEOUT):
                     if local_dir.exists():
                         try:
                             manifest = await self._load_manifest(local_dir)
@@ -478,6 +494,15 @@ class CheckpointManager:
                                 return local_dir
                         except Exception as exc:
                             logger.debug("Cache check failed: %s", exc)
+                    # Log progress every 60 seconds when waiting indefinitely
+                    elapsed = time.time() - start_time
+                    if elapsed - (last_log_time - start_time) >= 60:
+                        logger.info(
+                            "⏳ Still waiting for prefetch to cache checkpoint %s (%.0fs elapsed)...",
+                            window,
+                            elapsed,
+                        )
+                        last_log_time = time.time()
                     await asyncio.sleep(NO_DOWNLOAD_POLL_INTERVAL)
 
                 logger.warning(
