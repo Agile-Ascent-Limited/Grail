@@ -291,10 +291,8 @@ class MinerNeuron(BaseNeuron):
             if redis_aggregator is not None:
                 if redis_aggregator.is_hub:
                     logger.info(
-                        "🌐 Redis HUB mode: worker %d will aggregate from %d workers × %d nodes and upload",
+                        "🌐 Redis HUB mode: worker %d will aggregate from all nodes and upload",
                         worker_config.worker_id,
-                        redis_aggregator.total_workers,
-                        redis_aggregator.total_nodes,
                     )
                 else:
                     logger.info(
