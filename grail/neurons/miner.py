@@ -922,14 +922,23 @@ class MinerNeuron(BaseNeuron):
                                     )
                                     raise
                             else:
-                                logger.warning(
-                                    "[miner] Checkpoint window %s NOT AVAILABLE (get_checkpoint returned None). "
+                                # CRITICAL: Checkpoint download failed for a NEW window.
+                                # Do NOT proceed with mining using the stale model - this causes
+                                # SKETCH MISMATCH errors because we'd be generating rollouts with
+                                # model weights that don't match what the validator expects.
+                                # Instead, skip this window entirely and wait for retry.
+                                logger.error(
+                                    "[miner] ❌ Checkpoint window %s FAILED to download (get_checkpoint returned None). "
                                     "This may be due to: (1) checkpoint not published yet, "
                                     "(2) download failure, (3) hash verification failure during delta reconstruction. "
-                                    "Retaining current model (window=%s)",
+                                    "SKIPPING WINDOW %s to avoid SKETCH MISMATCH - will retry next iteration.",
                                     checkpoint_window,
-                                    current_checkpoint_window,
+                                    window_start,
                                 )
+                                # Don't update last_window_start - we want to retry this window
+                                # Sleep a bit to allow checkpoint to become available
+                                await asyncio.sleep(30)
+                                continue
                         else:
                             # Checkpoint unchanged - hub should still broadcast so non-hub leaders
                             # know to skip R2 discovery and proceed

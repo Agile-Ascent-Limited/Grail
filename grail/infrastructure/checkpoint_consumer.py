@@ -48,6 +48,10 @@ import zstandard as zstd
 # This saves ~10-20 seconds per checkpoint but disables integrity checking
 SKIP_HASH_VERIFICATION = os.getenv("GRAIL_SKIP_CHECKPOINT_HASH", "0") == "1"
 
+# Debug option: Set GRAIL_PREFER_FULL_CHECKPOINTS=1 to always prefer FULL over DELTA
+# This bypasses delta reconstruction which can help debug weight mismatch issues
+PREFER_FULL_CHECKPOINTS = os.getenv("GRAIL_PREFER_FULL_CHECKPOINTS", "0") == "1"
+
 from grail.shared.safetensors_utils import load_model_state_dict
 
 from ..shared.checkpoint_paths import (
@@ -199,6 +203,12 @@ class CheckpointManager:
                 NO_DOWNLOAD_TIMEOUT,
             )
 
+        if PREFER_FULL_CHECKPOINTS:
+            logger.info(
+                "⚠️ PREFER_FULL_CHECKPOINTS mode ENABLED - will prefer FULL over DELTA checkpoints "
+                "(useful for debugging weight mismatches)"
+            )
+
         # Clean up stale locks from crashed workers on startup
         if MULTI_WORKER_ENABLED:
             removed = cleanup_stale_locks(self.cache_root, max_age_seconds=60.0)
@@ -255,7 +265,8 @@ class CheckpointManager:
             cache_empty = not local_dir.exists()
 
             # For cold starts, prefer FULL to avoid broken delta chains
-            metadata = await self._fetch_metadata(window, prefer_full=cache_empty)
+            # Also prefer FULL if GRAIL_PREFER_FULL_CHECKPOINTS=1 (debug mode)
+            metadata = await self._fetch_metadata(window, prefer_full=cache_empty or PREFER_FULL_CHECKPOINTS)
             if metadata is None:
                 logger.debug(
                     "No metadata.json for window %s — attempting best-effort download",
@@ -491,7 +502,8 @@ class CheckpointManager:
         cache_empty = not local_dir.exists()
 
         # For cold starts, prefer FULL to avoid broken delta chains
-        metadata = await self._fetch_metadata(window, prefer_full=cache_empty)
+        # Also prefer FULL if GRAIL_PREFER_FULL_CHECKPOINTS=1 (debug mode)
+        metadata = await self._fetch_metadata(window, prefer_full=cache_empty or PREFER_FULL_CHECKPOINTS)
         if metadata is None:
             logger.debug("No metadata.json for window %s", window)
 
@@ -1102,17 +1114,32 @@ class CheckpointManager:
     async def _download_files(self, metadata: CheckpointMetadata, tmp_dir: Path) -> None:
         concurrency = int(os.getenv("GRAIL_CHECKPOINT_DOWNLOAD_CONCURRENCY", "24"))
         semaphore = asyncio.Semaphore(concurrency)
+        # Retry settings for files that may still be uploading
+        max_retries = int(os.getenv("GRAIL_CHECKPOINT_DOWNLOAD_RETRIES", "3"))
+        retry_delay = float(os.getenv("GRAIL_CHECKPOINT_RETRY_DELAY", "5.0"))
 
         async def _download(filename: str) -> None:
             async with semaphore:
                 remote_key = f"{metadata.remote_prefix()}/{filename}"
-                data = await comms.download_file_chunked(
-                    remote_key,
-                    credentials=self.credentials,
-                    use_write=False,
-                )
-                if data is None:
-                    raise CheckpointDownloadError(f"Missing file {filename}")
+
+                for attempt in range(max_retries + 1):
+                    data = await comms.download_file_chunked(
+                        remote_key,
+                        credentials=self.credentials,
+                        use_write=False,
+                    )
+                    if data is not None:
+                        break
+
+                    if attempt < max_retries:
+                        # File might still be uploading - wait and retry
+                        logger.warning(
+                            "File %s not found (attempt %d/%d), retrying in %.1fs...",
+                            filename, attempt + 1, max_retries + 1, retry_delay
+                        )
+                        await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    else:
+                        raise CheckpointDownloadError(f"Missing file {filename} after {max_retries + 1} attempts")
 
                 target_path = tmp_dir / filename
                 target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1138,6 +1165,10 @@ class CheckpointManager:
 
         asyncio.Semaphore(6)
 
+        # Retry settings for files that may still be uploading
+        max_retries = int(os.getenv("GRAIL_CHECKPOINT_DOWNLOAD_RETRIES", "3"))
+        retry_delay = float(os.getenv("GRAIL_CHECKPOINT_RETRY_DELAY", "5.0"))
+
         async def _dl(key: str) -> None:
             if not key or not key.startswith(prefix_dir) or key.endswith("/"):
                 return
@@ -1149,11 +1180,22 @@ class CheckpointManager:
                 rel = rel[:-3]
                 logger.debug("Stripping .gz from filename: %s -> %s", key, rel)
 
-            data = await comms.download_file_chunked(
-                key, credentials=self.credentials, use_write=False
-            )
-            if data is None:
-                raise CheckpointDownloadError(f"Missing file {key}")
+            for attempt in range(max_retries + 1):
+                data = await comms.download_file_chunked(
+                    key, credentials=self.credentials, use_write=False
+                )
+                if data is not None:
+                    break
+
+                if attempt < max_retries:
+                    logger.warning(
+                        "File %s not found (attempt %d/%d), retrying in %.1fs...",
+                        key, attempt + 1, max_retries + 1, retry_delay
+                    )
+                    await asyncio.sleep(retry_delay * (attempt + 1))
+                else:
+                    raise CheckpointDownloadError(f"Missing file {key} after {max_retries + 1} attempts")
+
             target_path = tmp_dir / rel
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_bytes(data)
