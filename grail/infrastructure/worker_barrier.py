@@ -1057,7 +1057,6 @@ class RedisRolloutAggregator:
         GRAIL_REDIS_URL - Redis connection URL (required)
         GRAIL_HUB_MODE=1 - Enables hub aggregation (only worker 0 on one node)
         GRAIL_NODE_ID - Unique node identifier (auto-generated if not set)
-        GRAIL_TOTAL_NODES - Number of nodes (default: 1 for single-node)
         GRAIL_TOTAL_WORKERS - Workers per node (default: 8)
 
     Usage:
@@ -1079,7 +1078,6 @@ class RedisRolloutAggregator:
         redis_url: str,
         node_id: str | None = None,
         is_hub: bool = False,
-        total_nodes: int = 1,
         worker_id: int = 0,
         total_workers: int = 8,
     ):
@@ -1090,7 +1088,6 @@ class RedisRolloutAggregator:
             redis_url: Redis connection URL
             node_id: Unique identifier for this node (if None, shared via Redis)
             is_hub: If True, this worker collects and uploads
-            total_nodes: Expected number of nodes (1 for single-node)
             worker_id: This worker's ID (0-7)
             total_workers: Workers per node (typically 8)
         """
@@ -1098,7 +1095,6 @@ class RedisRolloutAggregator:
 
         self.redis_url = redis_url
         self.is_hub = is_hub
-        self.total_nodes = total_nodes
         self.worker_id = worker_id
         self.total_workers = total_workers
 
@@ -1120,11 +1116,10 @@ class RedisRolloutAggregator:
         self.worker_key = f"{self.node_id}:w{worker_id}"
 
         logger.info(
-            "Redis rollout aggregator connected: node=%s, worker=%d, hub=%s, nodes=%d, workers=%d",
+            "Redis rollout aggregator connected: node=%s, worker=%d, hub=%s, workers=%d",
             self.node_id,
             worker_id,
             is_hub,
-            total_nodes,
             total_workers,
         )
 
@@ -1427,19 +1422,17 @@ class RedisRolloutAggregator:
 
     async def wait_for_workers(
         self, window: int, timeout: float = 60.0, min_workers: int | None = None,
-        early_exit_threshold: float = 0.90,
     ) -> int:
         """
         Hub waits for workers to push their rollouts.
 
-        Uses fast polling (0.3s) and early exit when threshold reached.
-        Also uses Redis pub/sub for instant notification when available.
+        Uses fast polling (0.3s) and stall detection for early exit.
+        Dynamically counts workers from Redis - no need to know expected count upfront.
 
         Args:
             window: Window number
             timeout: Max time to wait
-            min_workers: Minimum workers required (default: total_nodes * total_workers)
-            early_exit_threshold: Exit early if this fraction of workers ready (0.90 = 90%)
+            min_workers: Minimum workers required (optional, uses stall detection if not set)
 
         Returns:
             Number of workers that pushed rollouts
@@ -1447,72 +1440,54 @@ class RedisRolloutAggregator:
         if not self.is_hub:
             return 0
 
-        expected_workers = self.total_nodes * self.total_workers
-        if min_workers is None:
-            min_workers = expected_workers
-
-        # Calculate early exit count (e.g., 90% of expected)
-        early_exit_count = max(1, int(expected_workers * early_exit_threshold))
-
         start_time = time.time()
         poll_interval = 0.3  # Fast polling for quicker detection
         last_count = 0
         stall_start = None
-        # Exit if no progress for N seconds after early threshold (configurable)
+        # Exit if no progress for N seconds (configurable, default 15s)
         stall_timeout = float(os.getenv("GRAIL_HUB_STALL_TIMEOUT", "15"))
 
         while True:
             elapsed = time.time() - start_time
 
-            # Count ready workers
+            # Count ready workers dynamically from Redis
             workers_key = self._workers_list_key(window)
             ready_workers = self.client.scard(workers_key)
 
-            # Full coverage - all workers ready
-            if ready_workers >= min_workers:
+            # If min_workers specified and met, return immediately
+            if min_workers is not None and ready_workers >= min_workers:
                 logger.info(
-                    "Hub: %d/%d workers ready for window %d (waited %.1fs)",
-                    ready_workers, expected_workers, window, elapsed,
+                    "Hub: %d workers ready for window %d (waited %.1fs)",
+                    ready_workers, window, elapsed,
                 )
                 return ready_workers
 
-            # Early exit: if we have enough workers and progress stalled
-            if ready_workers >= early_exit_count:
-                if ready_workers > last_count:
-                    # Progress - reset stall timer
-                    stall_start = time.time()
-                    last_count = ready_workers
-                elif stall_start is not None:
-                    stall_elapsed = time.time() - stall_start
-                    if stall_elapsed > stall_timeout:
-                        logger.info(
-                            "Hub: early exit with %d/%d workers (%.0f%%) for window %d "
-                            "(no progress for %.1fs, total wait %.1fs)",
-                            ready_workers, expected_workers,
-                            100 * ready_workers / expected_workers,
-                            window, stall_elapsed, elapsed,
-                        )
-                        return ready_workers
-                else:
-                    stall_start = time.time()
-                    last_count = ready_workers
+            # Stall detection: exit if no new workers for stall_timeout seconds
+            if ready_workers > last_count:
+                # Progress - reset stall timer
+                stall_start = time.time()
+                last_count = ready_workers
+            elif ready_workers > 0 and stall_start is not None:
+                stall_elapsed = time.time() - stall_start
+                if stall_elapsed > stall_timeout:
+                    logger.info(
+                        "Hub: %d workers ready for window %d "
+                        "(no new workers for %.1fs, total wait %.1fs)",
+                        ready_workers, window, stall_elapsed, elapsed,
+                    )
+                    return ready_workers
+            elif ready_workers > 0:
+                stall_start = time.time()
+                last_count = ready_workers
 
             if elapsed > timeout:
                 logger.warning(
-                    "Hub: timeout waiting for workers, only %d/%d ready for window %d",
-                    ready_workers, expected_workers, window,
+                    "Hub: timeout waiting for workers, %d ready for window %d",
+                    ready_workers, window,
                 )
                 return ready_workers
 
             await asyncio.sleep(poll_interval)
-
-    # Backward compatibility alias
-    async def wait_for_nodes(
-        self, window: int, timeout: float = 45.0, min_nodes: int | None = None
-    ) -> int:
-        """Deprecated: use wait_for_workers instead."""
-        min_workers = min_nodes * self.total_workers if min_nodes else None
-        return await self.wait_for_workers(window, timeout, min_workers)
 
     def aggregate_from_workers(self, window: int) -> list[dict]:
         """
@@ -1999,8 +1974,7 @@ def get_redis_rollout_aggregator(
     Environment variables:
         GRAIL_REDIS_URL - Required for Redis mode
         GRAIL_HUB_MODE=1 - This worker is the hub (aggregator/uploader)
-        GRAIL_NODE_ID - Optional unique node ID
-        GRAIL_TOTAL_NODES - Number of nodes (default: 1 for single-node)
+        GRAIL_NODE_ID - Optional unique node ID (auto-generated if not set)
         GRAIL_WORKER_ID - This worker's ID (0-7)
         GRAIL_TOTAL_WORKERS - Workers per node (default: 8)
 
@@ -2019,7 +1993,6 @@ def get_redis_rollout_aggregator(
         import redis  # noqa: F401
 
         node_id = os.getenv("GRAIL_NODE_ID")
-        total_nodes = int(os.getenv("GRAIL_TOTAL_NODES", "1"))
 
         # Get worker config
         if worker_id is None:
@@ -2035,7 +2008,6 @@ def get_redis_rollout_aggregator(
             redis_url=redis_url,
             node_id=node_id,
             is_hub=is_hub,
-            total_nodes=total_nodes,
             worker_id=worker_id,
             total_workers=total_workers,
         )
