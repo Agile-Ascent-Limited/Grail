@@ -68,9 +68,24 @@ def load_env_file() -> dict[str, str]:
                         key = key.strip()
                         value = value.strip().strip("'\"")
                         env_vars[key] = value
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error loading .env: {e}")
     return env_vars
+
+
+def check_config_for_hub_mode() -> bool:
+    """Check current.config.js for GRAIL_HUB_MODE: '1'."""
+    config_file = GRAIL_HOME / "current.config.js"
+    if config_file.exists():
+        try:
+            content = config_file.read_text()
+            # Look for GRAIL_HUB_MODE: '1' or GRAIL_HUB_MODE: "1"
+            if re.search(r"GRAIL_HUB_MODE:\s*['\"]1['\"]", content):
+                print(f"Found GRAIL_HUB_MODE: '1' in {config_file}")
+                return True
+        except Exception as e:
+            print(f"Error reading config: {e}")
+    return False
 
 
 # Load .env file
@@ -88,8 +103,16 @@ DEFAULT_LOG_DIR = get_env("GRAIL_HEALTH_LOG_DIR", "/var/log/grail")
 DEFAULT_CHECK_INTERVAL = int(get_env("GRAIL_HEALTH_CHECK_INTERVAL", "30"))
 AUTO_RESTART = get_env("GRAIL_HEALTH_AUTO_RESTART", "").lower() in ("1", "true", "yes")
 
-# Auto-detect hub vs worker mode (check env, then .env file)
-IS_HUB = get_env("GRAIL_HUB_MODE", "").lower() in ("1", "true", "yes")
+# Auto-detect hub vs worker mode (check env, .env file, and current.config.js)
+_hub_mode_value = get_env("GRAIL_HUB_MODE", "")
+if _hub_mode_value.lower() in ("1", "true", "yes"):
+    IS_HUB = True
+    print(f"Found GRAIL_HUB_MODE={_hub_mode_value} in env/.env -> HUB mode")
+elif check_config_for_hub_mode():
+    IS_HUB = True
+else:
+    IS_HUB = False
+    print("GRAIL_HUB_MODE not found in env, .env, or current.config.js -> WORKER mode")
 
 # Patterns to match in logs
 # Note: Log lines may be wrapped across multiple lines by the logger
