@@ -239,6 +239,15 @@ class HealthMonitor:
         # Track pending summary (for multi-line log handling)
         self.pending_summary_worker: Optional[str] = None
 
+        # Initialize file positions to END of files (tail mode - only read new entries)
+        self._seek_to_end_of_logs()
+
+    def _seek_to_end_of_logs(self) -> None:
+        """Seek to end of all log files so we only read new entries."""
+        for log_file in self.get_log_files():
+            if log_file.exists():
+                self.file_positions[log_file] = log_file.stat().st_size
+
     def _handle_summary_data(self, worker_key: str, match: re.Match) -> None:
         """Handle matched summary data from log line."""
         window = int(match.group(1))
@@ -463,12 +472,9 @@ class HealthMonitor:
                 print("Restart successful - clearing old window state")
                 self.last_restart_time = time.time()
                 self.consecutive_failures = 0
-                # Clear old window state so we only check new logs after restart
+                # Clear old window state and skip to end of logs
                 self.windows.clear()
-                # Skip to end of log files so we only read NEW entries after restart
-                for log_file in self.get_log_files():
-                    if log_file.exists():
-                        self.file_positions[log_file] = log_file.stat().st_size
+                self._seek_to_end_of_logs()
                 return True
             else:
                 print(f"Restart failed: {result.stderr}")
