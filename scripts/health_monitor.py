@@ -240,6 +240,9 @@ class HealthMonitor:
         # Track pending summary (for multi-line log handling)
         self.pending_summary_worker: Optional[str] = None
 
+        # Track last printed window to avoid repeating
+        self.last_printed_window: Optional[int] = None
+
         # Initialize file positions to END of files (tail mode - only read new entries)
         self._seek_to_end_of_logs()
 
@@ -482,6 +485,7 @@ class HealthMonitor:
                 self.consecutive_failures = 0
                 # Clear old window state and skip to end of logs
                 self.windows.clear()
+                self.last_printed_window = None
                 self._seek_to_end_of_logs()
                 return True
             else:
@@ -499,7 +503,7 @@ class HealthMonitor:
             return False
 
     def print_status(self, unhealthy: list[WindowHealth]) -> None:
-        """Print health status."""
+        """Print health status (only when there's something new to report)."""
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if not unhealthy:
@@ -507,15 +511,18 @@ class HealthMonitor:
             if self.windows:
                 latest = max(self.windows.keys())
                 wh = self.windows[latest]
-                if wh.status == "UPLOADED":
+                # Only print if this is a NEW window we haven't printed yet
+                if wh.status == "UPLOADED" and latest != self.last_printed_window:
                     print(f"[{ts}] OK - Window {latest}: {wh.rollout_count} rollouts")
-                else:
-                    print(f"[{ts}] PENDING - Window {latest} in progress")
-            else:
+                    self.last_printed_window = latest
+                # Don't print PENDING repeatedly - only print when status changes
+            elif self.last_printed_window is not None:
+                # We had windows before but now none - something is wrong
                 print(f"[{ts}] WAITING - No windows processed yet")
+                self.last_printed_window = None
             return
 
-        # Print unhealthy windows
+        # Print unhealthy windows (already deduplicated by check_health)
         for wh in unhealthy:
             issues = wh.get_issues(self.min_rollouts)
             issues_str = ", ".join(issues)
