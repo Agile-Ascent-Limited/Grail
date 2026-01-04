@@ -460,9 +460,15 @@ class HealthMonitor:
             )
 
             if result.returncode == 0:
-                print("Restart successful")
+                print("Restart successful - clearing old window state")
                 self.last_restart_time = time.time()
                 self.consecutive_failures = 0
+                # Clear old window state so we only check new logs after restart
+                self.windows.clear()
+                # Skip to end of log files so we only read NEW entries after restart
+                for log_file in self.get_log_files():
+                    if log_file.exists():
+                        self.file_positions[log_file] = log_file.stat().st_size
                 return True
             else:
                 print(f"Restart failed: {result.stderr}")
