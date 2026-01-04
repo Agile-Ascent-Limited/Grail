@@ -530,6 +530,11 @@ def main():
         help="Run single check and exit (for cron/systemd)"
     )
     parser.add_argument(
+        "--hub",
+        action="store_true",
+        help="Force HUB mode (overrides GRAIL_HUB_MODE env var)"
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output in JSON format"
@@ -537,10 +542,14 @@ def main():
 
     args = parser.parse_args()
 
+    # Determine hub mode: CLI flag takes precedence, then env var
+    is_hub = args.hub or IS_HUB
+
     monitor = HealthMonitor(
         log_dir=args.log_dir,
         min_rollouts=args.min_rollouts,
         auto_restart=args.auto_restart,
+        is_hub=is_hub,
     )
 
     if args.once:

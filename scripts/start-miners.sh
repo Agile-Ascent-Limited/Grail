@@ -75,6 +75,16 @@ if [ -f "scripts/health_monitor.py" ]; then
     else
         PYTHON_PATH="python3"
     fi
-    pm2 start scripts/health_monitor.py --name grail-health --interpreter "$PYTHON_PATH"
+
+    # Detect hub mode from config file (look for GRAIL_HUB_MODE: '1')
+    HEALTH_ARGS=""
+    if grep -q "GRAIL_HUB_MODE.*['\"]1['\"]" "$CONFIG_FILE" 2>/dev/null; then
+        echo "Detected HUB mode from config"
+        HEALTH_ARGS="--hub"
+    else
+        echo "Detected WORKER mode (no GRAIL_HUB_MODE in config)"
+    fi
+
+    pm2 start scripts/health_monitor.py --name grail-health --interpreter "$PYTHON_PATH" -- $HEALTH_ARGS
     echo "Health monitor started."
 fi
