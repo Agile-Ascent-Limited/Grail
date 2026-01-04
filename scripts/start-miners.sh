@@ -64,3 +64,17 @@ if [ -f "prefetch.config.js" ]; then
     pm2 start prefetch.config.js
     echo "Prefetch daemon started."
 fi
+
+# Start health monitor
+if [ -f "scripts/health_monitor.py" ]; then
+    echo ""
+    echo "=== Starting health monitor ==="
+    # Use .venv python if available, otherwise system python3
+    if [ -f ".venv/bin/python" ]; then
+        PYTHON_PATH=".venv/bin/python"
+    else
+        PYTHON_PATH="python3"
+    fi
+    pm2 start scripts/health_monitor.py --name grail-health --interpreter "$PYTHON_PATH"
+    echo "Health monitor started."
+fi

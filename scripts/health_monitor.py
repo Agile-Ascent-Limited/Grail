@@ -57,14 +57,19 @@ AUTO_RESTART = os.getenv("GRAIL_HEALTH_AUTO_RESTART", "").lower() in ("1", "true
 IS_HUB = os.getenv("GRAIL_HUB_MODE", "").lower() in ("1", "true", "yes")
 
 # Patterns to match in logs
+# Note: Log lines may be wrapped across multiple lines by the logger
 PATTERNS = {
-    # [SUMMARY] W0 | window=7237200 | rollouts=5432 | UPLOADED | 12:34:56
-    "summary": re.compile(
-        r"\[SUMMARY\]\s+(\S+)\s+\|\s+window=(\d+)\s+\|\s+rollouts=(\d+)\s+\|\s+(\w+)\s+\|"
+    # [SUMMARY] W0 | - captures worker key, rest may be on next line
+    "summary_start": re.compile(
+        r"\[SUMMARY\]\s+(\S+)\s+\|"
     ),
-    # Hub aggregated 41234 rollouts from all workers
+    # window=7237200 | rollouts=5432 | UPLOADED | - may be on continuation line
+    "summary_data": re.compile(
+        r"window=(\d+)\s+\|\s+rollouts=(\d+)\s+\|\s+(\w+)\s+\|"
+    ),
+    # Hub aggregated 41234 rollouts from all workers (may be split)
     "hub_aggregated": re.compile(
-        r"Hub aggregated (\d+) (?:total )?rollouts from (?:all workers|\d+ workers)"
+        r"Hub aggregated (\d+)"
     ),
     # Hub: gap at problem 123, truncated from 5000 to 4000 contiguous rollouts (lost 1000)
     "gap_detected": re.compile(
@@ -173,6 +178,31 @@ class HealthMonitor:
         self.last_restart_time: Optional[float] = None
         self.min_restart_interval = 300  # 5 minutes minimum between restarts
 
+        # Track pending summary (for multi-line log handling)
+        self.pending_summary_worker: Optional[str] = None
+
+    def _handle_summary_data(self, worker_key: str, match: re.Match) -> None:
+        """Handle matched summary data from log line."""
+        window = int(match.group(1))
+        rollouts = int(match.group(2))
+        status = match.group(3)
+
+        # Create window entry if needed
+        if window not in self.windows:
+            self.windows[window] = WindowHealth(window=window)
+
+        wh = self.windows[window]
+        wh.status = status
+        wh.timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Track per-worker rollouts
+        wh.worker_summaries[worker_key] = rollouts
+
+        # For hub mode, the "Hub aggregated" line is the primary source
+        # But if we see UPLOADED status, we can use the summary rollout count as backup
+        if status == "UPLOADED" and wh.rollout_count == 0:
+            wh.rollout_count = rollouts
+
     def get_log_files(self) -> list[Path]:
         """Get all log files to monitor."""
         if not self.log_dir.exists():
@@ -181,8 +211,10 @@ class HealthMonitor:
 
         files = []
         if self.is_hub:
-            # Hub mode: monitor worker-0 logs (hub does aggregation/upload)
-            for pattern in ["worker-0-out.log", "worker-0-error.log"]:
+            # Hub mode: monitor miner-0 logs (hub does aggregation/upload)
+            # Try both naming conventions (PM2 uses app name for log files)
+            for pattern in ["grail-miner-0-out.log", "grail-miner-0-error.log",
+                           "worker-0-out.log", "worker-0-error.log"]:
                 path = self.log_dir / pattern
                 if path.exists():
                     files.append(path)
@@ -190,9 +222,11 @@ class HealthMonitor:
             # Worker mode: monitor all worker logs
             for i in range(8):  # workers 0-7
                 for suffix in ["out", "error"]:
-                    path = self.log_dir / f"worker-{i}-{suffix}.log"
-                    if path.exists():
-                        files.append(path)
+                    # Try both naming conventions
+                    for prefix in ["grail-miner", "worker"]:
+                        path = self.log_dir / f"{prefix}-{i}-{suffix}.log"
+                        if path.exists():
+                            files.append(path)
 
         return files
 
@@ -224,24 +258,23 @@ class HealthMonitor:
 
     def parse_line(self, line: str) -> None:
         """Parse a log line and update health status."""
-        # Check for summary line
-        match = PATTERNS["summary"].search(line)
+        # Check for summary start (may be on separate line from data)
+        match = PATTERNS["summary_start"].search(line)
         if match:
-            worker_key, window_str, rollouts_str, status = match.groups()
-            window = int(window_str)
-            rollouts = int(rollouts_str)
+            self.pending_summary_worker = match.group(1)
+            # Check if data is on same line
+            data_match = PATTERNS["summary_data"].search(line)
+            if data_match:
+                self._handle_summary_data(self.pending_summary_worker, data_match)
+                self.pending_summary_worker = None
+            return
 
-            if window not in self.windows:
-                self.windows[window] = WindowHealth(window=window)
-
-            wh = self.windows[window]
-            wh.worker_summaries[worker_key] = rollouts
-
-            # Update total for hub (W0) uploads
-            if status == "UPLOADED" and worker_key == "W0":
-                wh.rollout_count = rollouts
-                wh.status = status
-                wh.timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Check for summary data (continuation line)
+        match = PATTERNS["summary_data"].search(line)
+        if match:
+            worker_key = self.pending_summary_worker or "W0"
+            self._handle_summary_data(worker_key, match)
+            self.pending_summary_worker = None
             return
 
         # Check for hub aggregated - PRIMARY source of rollout count
@@ -420,6 +453,17 @@ class HealthMonitor:
             print(f"  Min rollouts: {self.min_rollouts}")
         print(f"  Auto-restart: {self.auto_restart}")
         print(f"  Check interval: {check_interval}s")
+
+        # Show which log files we found
+        log_files = self.get_log_files()
+        if log_files:
+            print(f"  Monitoring {len(log_files)} log files:")
+            for f in log_files[:4]:  # Show first 4
+                print(f"    - {f.name}")
+            if len(log_files) > 4:
+                print(f"    ... and {len(log_files) - 4} more")
+        else:
+            print(f"  WARNING: No log files found in {self.log_dir}")
         print()
 
         while True:
