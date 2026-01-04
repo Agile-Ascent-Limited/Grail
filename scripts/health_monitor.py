@@ -172,6 +172,7 @@ class WindowHealth:
     skipped_mining: bool = False  # Skipped due to stale checkpoint
     timestamp: str = ""
     worker_summaries: dict = field(default_factory=dict)
+    reported_unhealthy: bool = False  # Already reported as unhealthy (don't repeat)
 
     def is_healthy(self, min_rollouts: int) -> bool:
         """Check if this window is healthy."""
@@ -419,27 +420,34 @@ class HealthMonitor:
             for line in self.read_new_lines(log_file):
                 self.parse_line(line)
 
-        # Check recent windows (last 5)
+        # Check recent windows (last 5), skip already-reported ones
         unhealthy = []
         recent_windows = sorted(self.windows.keys())[-5:]
 
         for window in recent_windows:
             wh = self.windows[window]
 
+            # Skip windows already reported as unhealthy
+            if wh.reported_unhealthy:
+                continue
+
             if self.is_hub:
                 # Hub mode: check aggregated rollout count
                 if wh.status in ("aggregated", "UPLOADED") and not wh.is_healthy(self.min_rollouts):
+                    wh.reported_unhealthy = True
                     unhealthy.append(wh)
             else:
                 # Worker mode: check that workers are producing rollouts
                 # and no critical errors (checkpoint failures, etc.)
                 if wh.checkpoint_failed or wh.skipped_mining:
+                    wh.reported_unhealthy = True
                     unhealthy.append(wh)
                 elif wh.worker_summaries:
                     # Check if any worker produced 0 rollouts
                     for worker_id, count in wh.worker_summaries.items():
                         if count == 0:
                             wh.status = f"WORKER_{worker_id}_ZERO_ROLLOUTS"
+                            wh.reported_unhealthy = True
                             unhealthy.append(wh)
                             break
 
