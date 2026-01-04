@@ -19,10 +19,16 @@ echo ""
 # Change to grail directory
 cd "$GRAIL_DIR"
 
-# Step 1: Stop PM2 processes if running
-echo "[1/4] Stopping any running PM2 grail processes..."
-pm2 stop all 2>/dev/null || true
-pm2 delete all 2>/dev/null || true
+# Step 1: Stop PM2 miner processes (keep health monitor running if it triggered this)
+echo "[1/4] Stopping any running PM2 grail miner processes..."
+# Stop miners individually instead of all (preserves health monitor during auto-restart)
+for i in 0 1 2 3 4 5 6 7; do
+    pm2 stop "grail-miner-$i" 2>/dev/null || true
+    pm2 delete "grail-miner-$i" 2>/dev/null || true
+done
+# Also stop prefetch if running
+pm2 stop grail-prefetch 2>/dev/null || true
+pm2 delete grail-prefetch 2>/dev/null || true
 sleep 1
 
 # Step 2: Kill any zombie grail processes
@@ -65,29 +71,34 @@ if [ -f "prefetch.config.js" ]; then
     echo "Prefetch daemon started."
 fi
 
-# Start health monitor
+# Start health monitor (skip if already running - e.g., during auto-restart)
 if [ -f "scripts/health_monitor.py" ]; then
-    echo ""
-    echo "=== Starting health monitor ==="
-    # Use .venv python if available, otherwise system python3
-    if [ -f ".venv/bin/python" ]; then
-        PYTHON_PATH=".venv/bin/python"
+    if pm2 describe grail-health >/dev/null 2>&1; then
+        echo ""
+        echo "=== Health monitor already running (skipping) ==="
     else
-        PYTHON_PATH="python3"
-    fi
+        echo ""
+        echo "=== Starting health monitor ==="
+        # Use .venv python if available, otherwise system python3
+        if [ -f ".venv/bin/python" ]; then
+            PYTHON_PATH=".venv/bin/python"
+        else
+            PYTHON_PATH="python3"
+        fi
 
-    # Detect hub mode from config file or .env
-    HEALTH_ARGS=""
-    if grep -q "GRAIL_HUB_MODE.*['\"]1['\"]" "$CONFIG_FILE" 2>/dev/null; then
-        echo "Detected HUB mode from config"
-        HEALTH_ARGS="--hub"
-    elif grep -qE "^(export )?GRAIL_HUB_MODE=['\"]?1['\"]?" .env 2>/dev/null; then
-        echo "Detected HUB mode from .env"
-        HEALTH_ARGS="--hub"
-    else
-        echo "Detected WORKER mode (no GRAIL_HUB_MODE found)"
-    fi
+        # Detect hub mode from config file or .env
+        HEALTH_ARGS=""
+        if grep -q "GRAIL_HUB_MODE.*['\"]1['\"]" "$CONFIG_FILE" 2>/dev/null; then
+            echo "Detected HUB mode from config"
+            HEALTH_ARGS="--hub"
+        elif grep -qE "^(export )?GRAIL_HUB_MODE=['\"]?1['\"]?" .env 2>/dev/null; then
+            echo "Detected HUB mode from .env"
+            HEALTH_ARGS="--hub"
+        else
+            echo "Detected WORKER mode (no GRAIL_HUB_MODE found)"
+        fi
 
-    pm2 start scripts/health_monitor.py --name grail-health --interpreter "$PYTHON_PATH" -- $HEALTH_ARGS
-    echo "Health monitor started."
+        pm2 start scripts/health_monitor.py --name grail-health --interpreter "$PYTHON_PATH" -- $HEALTH_ARGS
+        echo "Health monitor started."
+    fi
 fi
