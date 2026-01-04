@@ -2,12 +2,18 @@
 """
 Health monitor for GRAIL multi-node mining.
 
-Monitors miner logs for issues and can trigger restarts:
+Auto-detects HUB vs WORKER mode based on GRAIL_HUB_MODE env var.
+
+HUB mode monitors:
 - Insufficient rollouts (< 5120 per window)
 - Gaps in problem indices (causes truncation)
 - Upload failures
 - Checkpoint download failures / excessive retries
-- Skipped mining due to stale checkpoint (would cause SKETCH MISMATCH)
+
+WORKER mode monitors:
+- Checkpoint download failures
+- Skipped mining due to stale checkpoint
+- Workers producing zero rollouts
 
 Usage:
     # Use grailv alias to enter venv and project root, then:
@@ -16,10 +22,11 @@ Usage:
     # Monitor and auto-restart local PM2 on issues
     python scripts/health_monitor.py --auto-restart
 
-    # Monitor with custom thresholds
+    # Monitor with custom thresholds (hub mode only)
     python scripts/health_monitor.py --min-rollouts 4096
 
 Environment variables:
+    GRAIL_HUB_MODE - Set to 1 for hub mode (auto-detected)
     GRAIL_HEALTH_MIN_ROLLOUTS - Minimum rollouts per window (default: 5120)
     GRAIL_HEALTH_LOG_DIR - Log directory (default: /var/log/grail)
     GRAIL_HEALTH_CHECK_INTERVAL - Check interval in seconds (default: 30)
@@ -45,6 +52,9 @@ DEFAULT_MIN_ROLLOUTS = int(os.getenv("GRAIL_HEALTH_MIN_ROLLOUTS", "5120"))
 DEFAULT_LOG_DIR = os.getenv("GRAIL_HEALTH_LOG_DIR", "/var/log/grail")
 DEFAULT_CHECK_INTERVAL = int(os.getenv("GRAIL_HEALTH_CHECK_INTERVAL", "30"))
 AUTO_RESTART = os.getenv("GRAIL_HEALTH_AUTO_RESTART", "").lower() in ("1", "true", "yes")
+
+# Auto-detect hub vs worker mode
+IS_HUB = os.getenv("GRAIL_HUB_MODE", "").lower() in ("1", "true", "yes")
 
 # Patterns to match in logs
 PATTERNS = {
@@ -142,10 +152,12 @@ class HealthMonitor:
         log_dir: str,
         min_rollouts: int = DEFAULT_MIN_ROLLOUTS,
         auto_restart: bool = False,
+        is_hub: bool = IS_HUB,
     ):
         self.log_dir = Path(log_dir)
         self.min_rollouts = min_rollouts
         self.auto_restart = auto_restart
+        self.is_hub = is_hub
 
         # Track window health
         self.windows: dict[int, WindowHealth] = {}
@@ -167,12 +179,20 @@ class HealthMonitor:
             print(f"Warning: Log directory {self.log_dir} does not exist")
             return []
 
-        # Monitor both out and error logs for worker 0 (hub)
         files = []
-        for pattern in ["worker-0-out.log", "worker-0-error.log"]:
-            path = self.log_dir / pattern
-            if path.exists():
-                files.append(path)
+        if self.is_hub:
+            # Hub mode: monitor worker-0 logs (hub does aggregation/upload)
+            for pattern in ["worker-0-out.log", "worker-0-error.log"]:
+                path = self.log_dir / pattern
+                if path.exists():
+                    files.append(path)
+        else:
+            # Worker mode: monitor all worker logs
+            for i in range(8):  # workers 0-7
+                for suffix in ["out", "error"]:
+                    path = self.log_dir / f"worker-{i}-{suffix}.log"
+                    if path.exists():
+                        files.append(path)
 
         return files
 
@@ -305,10 +325,23 @@ class HealthMonitor:
 
         for window in recent_windows:
             wh = self.windows[window]
-            # Check windows that are at least aggregated (or uploaded)
-            # This catches issues even if upload fails after aggregation
-            if wh.status in ("aggregated", "UPLOADED") and not wh.is_healthy(self.min_rollouts):
-                unhealthy.append(wh)
+
+            if self.is_hub:
+                # Hub mode: check aggregated rollout count
+                if wh.status in ("aggregated", "UPLOADED") and not wh.is_healthy(self.min_rollouts):
+                    unhealthy.append(wh)
+            else:
+                # Worker mode: check that workers are producing rollouts
+                # and no critical errors (checkpoint failures, etc.)
+                if wh.checkpoint_failed or wh.skipped_mining:
+                    unhealthy.append(wh)
+                elif wh.worker_summaries:
+                    # Check if any worker produced 0 rollouts
+                    for worker_id, count in wh.worker_summaries.items():
+                        if count == 0:
+                            wh.status = f"WORKER_{worker_id}_ZERO_ROLLOUTS"
+                            unhealthy.append(wh)
+                            break
 
         return unhealthy
 
@@ -379,9 +412,12 @@ class HealthMonitor:
 
     def run(self, check_interval: int = DEFAULT_CHECK_INTERVAL) -> None:
         """Run the health monitor continuously."""
-        print(f"Starting health monitor...")
+        mode = "HUB" if self.is_hub else "WORKER"
+        print(f"Starting health monitor ({mode} mode)...")
         print(f"  Log directory: {self.log_dir}")
-        print(f"  Min rollouts: {self.min_rollouts}")
+        print(f"  Mode: {mode}")
+        if self.is_hub:
+            print(f"  Min rollouts: {self.min_rollouts}")
         print(f"  Auto-restart: {self.auto_restart}")
         print(f"  Check interval: {check_interval}s")
         print()
