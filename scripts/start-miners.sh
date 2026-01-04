@@ -9,7 +9,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GRAIL_DIR="$(dirname "$SCRIPT_DIR")"
-CONFIG_FILE="${1:-ecosystem.config.js}"
+CONFIG_FILE="${1:-current.config.js}"
 
 echo "=== GRAIL Miner Startup Script ==="
 echo "Working directory: $GRAIL_DIR"
@@ -76,13 +76,16 @@ if [ -f "scripts/health_monitor.py" ]; then
         PYTHON_PATH="python3"
     fi
 
-    # Detect hub mode from config file (look for GRAIL_HUB_MODE: '1')
+    # Detect hub mode from config file or .env
     HEALTH_ARGS=""
     if grep -q "GRAIL_HUB_MODE.*['\"]1['\"]" "$CONFIG_FILE" 2>/dev/null; then
         echo "Detected HUB mode from config"
         HEALTH_ARGS="--hub"
+    elif grep -qE "^(export )?GRAIL_HUB_MODE=['\"]?1['\"]?" .env 2>/dev/null; then
+        echo "Detected HUB mode from .env"
+        HEALTH_ARGS="--hub"
     else
-        echo "Detected WORKER mode (no GRAIL_HUB_MODE in config)"
+        echo "Detected WORKER mode (no GRAIL_HUB_MODE found)"
     fi
 
     pm2 start scripts/health_monitor.py --name grail-health --interpreter "$PYTHON_PATH" -- $HEALTH_ARGS

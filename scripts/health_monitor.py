@@ -47,14 +47,49 @@ from pathlib import Path
 from typing import Optional
 
 
-# Default thresholds
-DEFAULT_MIN_ROLLOUTS = int(os.getenv("GRAIL_HEALTH_MIN_ROLLOUTS", "5120"))
-DEFAULT_LOG_DIR = os.getenv("GRAIL_HEALTH_LOG_DIR", "/var/log/grail")
-DEFAULT_CHECK_INTERVAL = int(os.getenv("GRAIL_HEALTH_CHECK_INTERVAL", "30"))
-AUTO_RESTART = os.getenv("GRAIL_HEALTH_AUTO_RESTART", "").lower() in ("1", "true", "yes")
+# GRAIL_HOME path
+GRAIL_HOME = Path(os.getenv("GRAIL_HOME", "/root/Grail"))
 
-# Auto-detect hub vs worker mode
-IS_HUB = os.getenv("GRAIL_HUB_MODE", "").lower() in ("1", "true", "yes")
+
+def load_env_file() -> dict[str, str]:
+    """Load .env file from GRAIL_HOME if it exists."""
+    env_file = GRAIL_HOME / ".env"
+    env_vars = {}
+    if env_file.exists():
+        try:
+            with open(env_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        # Handle: export VAR=value, VAR=value, VAR="value", VAR='value'
+                        if line.startswith("export "):
+                            line = line[7:]
+                        key, _, value = line.partition("=")
+                        key = key.strip()
+                        value = value.strip().strip("'\"")
+                        env_vars[key] = value
+        except Exception:
+            pass
+    return env_vars
+
+
+# Load .env file
+_env_file_vars = load_env_file()
+
+
+def get_env(key: str, default: str = "") -> str:
+    """Get env var from environment or .env file."""
+    return os.getenv(key, _env_file_vars.get(key, default))
+
+
+# Default thresholds
+DEFAULT_MIN_ROLLOUTS = int(get_env("GRAIL_HEALTH_MIN_ROLLOUTS", "5120"))
+DEFAULT_LOG_DIR = get_env("GRAIL_HEALTH_LOG_DIR", "/var/log/grail")
+DEFAULT_CHECK_INTERVAL = int(get_env("GRAIL_HEALTH_CHECK_INTERVAL", "30"))
+AUTO_RESTART = get_env("GRAIL_HEALTH_AUTO_RESTART", "").lower() in ("1", "true", "yes")
+
+# Auto-detect hub vs worker mode (check env, then .env file)
+IS_HUB = get_env("GRAIL_HUB_MODE", "").lower() in ("1", "true", "yes")
 
 # Patterns to match in logs
 # Note: Log lines may be wrapped across multiple lines by the logger
